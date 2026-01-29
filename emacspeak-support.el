@@ -42,18 +42,22 @@
 
 (require 'emacspeak-preamble)
 
-;;;  State tracking:
+;;;  Directory tracking:
 
 (defvar emacspeak-support--directory
   (file-name-directory (or load-file-name buffer-file-name))
-  "Directory containing emacspeak-support and its extensions.")
+  "Directory where emacspeak-support is located.
+Captured during load to avoid nil errors when called from non-file buffers.")
+
+;;;  State tracking:
 
 (defvar emacspeak-support--extensions
   '((corfu . "emacspeak-corfu")
     (vertico . "emacspeak-vertico")
     (which-key . "emacspeak-which-key")
     (markdown . "emacspeak-markdown")
-    (helm . "emacspeak-helm"))
+    (helm . "emacspeak-helm")
+    (agent-shell . "emacspeak-agent-shell"))
   "Alist of extension symbols to file names.")
 
 (defvar emacspeak-support--enabled '()
@@ -64,7 +68,7 @@
 (defun emacspeak-support--extension-file (extension)
   "Return the file path for EXTENSION."
   (let ((filename (cdr (assq extension emacspeak-support--extensions))))
-    (when filename
+    (when (and filename emacspeak-support--directory)
       (concat emacspeak-support--directory filename ".el"))))
 
 (defun emacspeak-support--extension-enabled-p (extension)
@@ -224,6 +228,21 @@
   "Toggle Emacspeak support for Helm."
   (interactive)
   (emacspeak-support-toggle 'helm))
+
+(defun emacspeak-support-enable-agent-shell ()
+  "Enable Emacspeak support for agent-shell."
+  (interactive)
+  (emacspeak-support-enable 'agent-shell))
+
+(defun emacspeak-support-disable-agent-shell ()
+  "Disable Emacspeak support for agent-shell."
+  (interactive)
+  (emacspeak-support-disable 'agent-shell))
+
+(defun emacspeak-support-toggle-agent-shell ()
+  "Toggle Emacspeak support for agent-shell."
+  (interactive)
+  (emacspeak-support-toggle 'agent-shell))
 
 ;;;  Provide the module:
 

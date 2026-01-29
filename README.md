@@ -158,6 +158,16 @@ Speech-enables Helm, a powerful incremental completion and selection framework.
 
 **Based on:** Patch by Parham Doustdar (Emacspeak mailing list, December 26, 2025)
 
+
+### emacspeak-agent-shell
+Speech-enables Agent Shell, a powerful and versatile tool for connecting and communicating with agents that support ACP protocol.
+
+**Features:**
+
+- Provides spoken feedback when the agents generate output.
+- Provides a toggle to turn automatic speech announcements on and off.
+
+
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
