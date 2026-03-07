@@ -44,6 +44,10 @@
 
 ;;;  State tracking:
 
+(defvar emacspeak-support--directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing emacspeak-support and its extensions.")
+
 (defvar emacspeak-support--extensions
   '((corfu . "emacspeak-corfu")
     (vertico . "emacspeak-vertico")
@@ -61,8 +65,7 @@
   "Return the file path for EXTENSION."
   (let ((filename (cdr (assq extension emacspeak-support--extensions))))
     (when filename
-      (concat (file-name-directory (or load-file-name buffer-file-name))
-              filename ".el"))))
+      (concat emacspeak-support--directory filename ".el"))))
 
 (defun emacspeak-support--extension-enabled-p (extension)
   "Return non-nil if EXTENSION is currently enabled."
