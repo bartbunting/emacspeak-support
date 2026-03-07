@@ -27,6 +27,7 @@
 ;;
 ;; Usage:
 ;;   M-x emacspeak-support-enable-corfu
+;;   M-x emacspeak-support-enable-vertico
 ;;   M-x emacspeak-support-enable-which-key
 ;;   M-x emacspeak-support-enable-markdown
 ;;   M-x emacspeak-support-enable-helm
@@ -45,6 +46,7 @@
 
 (defvar emacspeak-support--extensions
   '((corfu . "emacspeak-corfu")
+    (vertico . "emacspeak-vertico")
     (which-key . "emacspeak-which-key")
     (markdown . "emacspeak-markdown")
     (helm . "emacspeak-helm"))
@@ -189,6 +191,21 @@
   "Toggle Emacspeak support for Markdown."
   (interactive)
   (emacspeak-support-toggle 'markdown))
+
+(defun emacspeak-support-enable-vertico ()
+  "Enable Emacspeak support for Vertico."
+  (interactive)
+  (emacspeak-support-enable 'vertico))
+
+(defun emacspeak-support-disable-vertico ()
+  "Disable Emacspeak support for Vertico."
+  (interactive)
+  (emacspeak-support-disable 'vertico))
+
+(defun emacspeak-support-toggle-vertico ()
+  "Toggle Emacspeak support for Vertico."
+  (interactive)
+  (emacspeak-support-toggle 'vertico))
 
 (defun emacspeak-support-enable-helm ()
   "Enable Emacspeak support for Helm."
