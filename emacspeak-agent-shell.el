@@ -102,6 +102,26 @@ When t, permission requests are spoken as soon as they appear."
   :type 'boolean
   :group 'emacspeak-agent-shell)
 
+(defcustom emacspeak-agent-shell-signal-processing t
+  "Whether to play auditory icons marking the model's processing state.
+When non-nil, a start icon is played the moment the model begins
+processing a prompt and an end icon is played when generation
+finishes (or fails).  The agent-shell heartbeat is used as the
+underlying processing signal, so the icons fire even during
+initial handshake/authentication."
+  :type 'boolean
+  :group 'emacspeak-agent-shell)
+
+(defcustom emacspeak-agent-shell-processing-start-icon 'progress
+  "Auditory icon played when the model starts processing a prompt."
+  :type 'symbol
+  :group 'emacspeak-agent-shell)
+
+(defcustom emacspeak-agent-shell-processing-end-icon 'task-done
+  "Auditory icon played when the model finishes processing."
+  :type 'symbol
+  :group 'emacspeak-agent-shell)
+
 ;;;  Speech Setup
 
 ;;;###autoload
@@ -174,11 +194,15 @@ When t, permission requests are spoken as soon as they appear."
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-timer)
 
 (defvar emacspeak-agent-shell--pending-speech-qualified-ids nil
-  "List of qualified-ids for blocks pending speech.
-Accumulates all block IDs until streaming completes, then we read
-the actual content from agent-shell-ui--content-store.")
+  "List of qualified-ids for blocks pending speech, in arrival order.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-qualified-ids)
+
+(defvar emacspeak-agent-shell--pending-bodies nil
+  "Hash table mapping qualified-id to accumulated body text.
+Populated as streaming chunks arrive; consumed when the speech timer fires.")
+
+(make-variable-buffer-local 'emacspeak-agent-shell--pending-bodies)
 
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
@@ -196,15 +220,13 @@ chunk arrives before speaking the complete text."
 (defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
   "Execute delayed speech of blocks identified by QUALIFIED-IDS in BUFFER.
 This is called after streaming has completed."
-  (cl-declare (special agent-shell-ui--content-store dtk-speaker-process))
+  (cl-declare (special dtk-speaker-process))
   (when (and buffer (buffer-live-p buffer))
     (with-current-buffer buffer
-      ;; Speak each accumulated block in order
       (dolist (qualified-id qualified-ids)
-        ;; Read the actual content from the content store
-        (when-let* ((body-key (concat qualified-id "-body"))
-                    (content (and agent-shell-ui--content-store
-                                  (gethash body-key agent-shell-ui--content-store)))
+        (when-let* ((content (and emacspeak-agent-shell--pending-bodies
+                                  (gethash qualified-id
+                                           emacspeak-agent-shell--pending-bodies)))
                     (block-id (if (string-match "-\\([^-]+\\)$" qualified-id)
                                   (match-string 1 qualified-id)
                                 qualified-id))
@@ -212,7 +234,8 @@ This is called after streaming has completed."
                     (trimmed (string-trim content)))
           (when (not (string-empty-p trimmed))
             (emacspeak-agent-shell--speak-content trimmed block-type))))
-      ;; Clear pending state
+      (when emacspeak-agent-shell--pending-bodies
+        (clrhash emacspeak-agent-shell--pending-bodies))
       (setq emacspeak-agent-shell--pending-speech-qualified-ids nil)
       (setq emacspeak-agent-shell--pending-speech-timer nil))))
 
@@ -342,12 +365,26 @@ and speak them after streaming pauses for a brief period."
         ;; Cancel any existing timer
         (when emacspeak-agent-shell--pending-speech-timer
           (cancel-timer emacspeak-agent-shell--pending-speech-timer))
-        ;; Build qualified-id (namespace-id + block-id)
+        ;; Lazily create the per-buffer body store
+        (unless emacspeak-agent-shell--pending-bodies
+          (setq emacspeak-agent-shell--pending-bodies
+                (make-hash-table :test 'equal)))
+        ;; Build qualified-id (namespace-id + block-id) and accumulate body
         (let* ((namespace-id (map-elt state :request-count))
-               (qualified-id (format "%s-%s" namespace-id block-id)))
-          ;; Add qualified-id to list if not already present
-          (unless (member qualified-id emacspeak-agent-shell--pending-speech-qualified-ids)
-            (push qualified-id emacspeak-agent-shell--pending-speech-qualified-ids)))
+               (qualified-id (format "%s-%s" namespace-id block-id))
+               (existing (gethash qualified-id
+                                  emacspeak-agent-shell--pending-bodies)))
+          (puthash qualified-id
+                   (if (and append-p existing)
+                       (concat existing body)
+                     body)
+                   emacspeak-agent-shell--pending-bodies)
+          (unless (member qualified-id
+                          emacspeak-agent-shell--pending-speech-qualified-ids)
+            ;; Keep arrival order: append to end rather than push to head.
+            (setq emacspeak-agent-shell--pending-speech-qualified-ids
+                  (append emacspeak-agent-shell--pending-speech-qualified-ids
+                          (list qualified-id)))))
         ;; Set a timer to speak after the delay
         (setq emacspeak-agent-shell--pending-speech-timer
               (run-with-timer
@@ -355,7 +392,6 @@ and speak them after streaming pauses for a brief period."
                nil
                #'emacspeak-agent-shell--execute-delayed-speech
                buffer
-               ;; Pass a copy of the list
                (copy-sequence emacspeak-agent-shell--pending-speech-qualified-ids))))))
   ad-return-value)
 
@@ -461,6 +497,32 @@ and speak them after streaming pauses for a brief period."
         (when title
           (message "Tool: %s - %s" title status))))))
 
+;;;  Processing State Signals
+
+(defadvice agent-shell-heartbeat-start (before emacspeak pre act comp)
+  "Play an auditory icon when the model starts processing a prompt.
+Fires only on the idle->busy transition so repeated start calls
+do not stack earcons."
+  (cl-declare (special emacspeak-agent-shell-signal-processing
+                       emacspeak-agent-shell-processing-start-icon))
+  (when emacspeak-agent-shell-signal-processing
+    (let* ((heartbeat (plist-get (ad-get-args 0) :heartbeat))
+           (timer (and heartbeat (map-elt heartbeat :heartbeat-timer))))
+      (unless (and timer (timerp timer))
+        (emacspeak-icon emacspeak-agent-shell-processing-start-icon)))))
+
+(defadvice agent-shell-heartbeat-stop (before emacspeak pre act comp)
+  "Play an auditory icon when the model finishes processing.
+Fires only on the busy->idle transition so repeated stop calls
+do not stack earcons."
+  (cl-declare (special emacspeak-agent-shell-signal-processing
+                       emacspeak-agent-shell-processing-end-icon))
+  (when emacspeak-agent-shell-signal-processing
+    (let* ((heartbeat (plist-get (ad-get-args 0) :heartbeat))
+           (timer (and heartbeat (map-elt heartbeat :heartbeat-timer))))
+      (when (and timer (timerp timer))
+        (emacspeak-icon emacspeak-agent-shell-processing-end-icon)))))
+
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
@@ -483,7 +545,9 @@ and speak them after streaming pauses for a brief period."
     (agent-shell-viewport-submit after)
     (agent-shell-viewport-view-mode after)
     (agent-shell-viewport-edit-mode after)
-    (agent-shell--save-tool-call after))
+    (agent-shell--save-tool-call after)
+    (agent-shell-heartbeat-start before)
+    (agent-shell-heartbeat-stop before))
   "List of advised functions for Emacspeak agent-shell support.")
 
 (defun emacspeak-agent-shell-enable ()
