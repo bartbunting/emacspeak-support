@@ -44,7 +44,12 @@
 (defvar emacspeak-agent-shell-tool-output-verbosity)
 (defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
+(defvar agent-shell--state)
+(defvar agent-shell-header-style)
 (defvar agent-shell-mode-map)
+(defvar agent-shell-show-context-usage-indicator)
+(defvar agent-shell-show-session-id)
+(defvar agent-shell-viewport--position-cache)
 (defvar agent-shell-viewport-edit-mode-map)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar agent-shell-viewport-view-mode-hook)
@@ -71,6 +76,12 @@
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--handle-lifecycle-event
                   "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--header-state
+                  "emacspeak-agent-shell" (&optional buffer))
+(declare-function emacspeak-agent-shell--format-brief-header
+                  "emacspeak-agent-shell" (state))
+(declare-function emacspeak-agent-shell--format-full-header
+                  "emacspeak-agent-shell" (state))
 (declare-function emacspeak-agent-shell--lifecycle-event-cleanup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--lifecycle-event-setup
@@ -85,6 +96,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--session-focused-p
                   "emacspeak-agent-shell" (&optional buffer))
+(declare-function emacspeak-agent-shell--speak-focus-header-if-needed
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--install-speech-control-bindings
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-next-block-of-type
@@ -124,6 +137,8 @@
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-speak-header
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-select-speaking-method
                   "emacspeak-agent-shell" ())
@@ -531,6 +546,145 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (speak "User: hello")
       (icon warn-user)
       (speak "approve?")))))
+
+(ert-deftest emacspeak-agent-shell-speech-setup-preserves-package-header ()
+  "Speech setup should not replace agent-shell's semantic header."
+  (with-temp-buffer
+    (let ((header-line-format "Agent semantic header"))
+      (cl-letf (((symbol-function 'dtk-set-punctuations) #'ignore)
+                ((symbol-function
+                  'emacspeak-pronounce-add-dictionary-entry)
+                 #'ignore)
+                ((symbol-function
+                  'emacspeak-pronounce-refresh-pronunciations)
+                 #'ignore))
+        (emacspeak-agent-shell-speech-setup))
+      (should (equal header-line-format "Agent semantic header")))))
+
+(ert-deftest emacspeak-agent-shell-header-formatters-separate-detail-levels ()
+  "Focus speech should be concise while explicit speech exposes full state."
+  (let ((state
+         '(:agent "Codex agent"
+           :project "emacspeak-support"
+           :busy t
+           :model "GPT-5.6-Sol"
+           :thought-level "xhigh"
+           :mode "Agent (full access)"
+           :context-percentage 73
+           :session-id "session-123")))
+    (should
+     (equal (emacspeak-agent-shell--format-brief-header state)
+            "Codex agent, emacspeak-support, busy."))
+    (should
+     (equal
+      (emacspeak-agent-shell--format-full-header state)
+      (concat
+       "Codex agent. Project emacspeak-support. Busy. "
+       "Model GPT-5.6-Sol. Thought level xhigh. "
+       "Mode Agent (full access). Context 73 percent. "
+       "Session ID session-123.")))))
+
+(ert-deftest emacspeak-agent-shell-header-formatters-describe-viewport ()
+  "Viewport focus speech should include position and interaction status."
+  (let ((state
+         '(:agent "Codex agent"
+           :project "emacspeak-support"
+           :busy t
+           :viewport-position "2 of 5"
+           :viewport-status "edit queue"
+           :model "GPT-5.6-Sol")))
+    (should
+     (equal (emacspeak-agent-shell--format-brief-header state)
+            (concat
+             "Codex agent, emacspeak-support, viewport 2 of 5, "
+             "edit queue.")))
+    (should
+     (equal (emacspeak-agent-shell--format-full-header state)
+            (concat
+             "Codex agent. Project emacspeak-support. Viewport 2 of 5. "
+             "Edit queue. Model GPT-5.6-Sol.")))))
+
+(ert-deftest emacspeak-agent-shell-header-state-uses-semantic-session-data ()
+  "Header state should derive values from agent-shell state, not SVG text."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (setq-local
+     agent-shell--state
+     '((:agent-config . ((:buffer-name . "Codex")))
+       (:heartbeat . ((:status . busy)))
+       (:session . ((:id . "session-123")))
+       (:usage . ((:context-used . 188000)
+                  (:context-size . 258000)))))
+    (let ((agent-shell-show-context-usage-indicator 'detailed)
+          (agent-shell-show-session-id t))
+      (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t))
+                ((symbol-function 'agent-shell--project-name)
+                 (lambda () "emacspeak-support"))
+                ((symbol-function 'agent-shell-get-model-name)
+                 (lambda (_state) "GPT-5.6-Sol"))
+                ((symbol-function 'agent-shell-get-thought-level-name)
+                 (lambda (_state) "xhigh"))
+                ((symbol-function 'agent-shell-get-mode-name)
+                 (lambda (_state) "Agent (full access)")))
+        (should
+         (equal
+          (emacspeak-agent-shell--header-state)
+          '(:agent "Codex agent"
+            :project "emacspeak-support"
+            :busy t
+            :viewport-position nil
+            :viewport-status nil
+            :model "GPT-5.6-Sol"
+            :thought-level "xhigh"
+            :mode "Agent (full access)"
+            :context-percentage 73
+            :session-id "session-123")))))))
+
+(ert-deftest emacspeak-agent-shell-graphical-header-gets-brief-fallback ()
+  "A visually rendered whitespace header should receive semantic speech."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode
+          header-line-format "  ")
+    (cl-letf (((symbol-function 'format-mode-line)
+               (lambda (&rest _) "  "))
+              ((symbol-function 'emacspeak-agent-shell--header-state)
+               (lambda (&optional _buffer)
+                 '(:agent "Codex agent"
+                   :project "emacspeak-support"
+                   :busy t))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--speak-focus-header-if-needed))
+        '((icon item)
+          (notify "Codex agent, emacspeak-support, busy.")))))))
+
+(ert-deftest emacspeak-agent-shell-text-header-keeps-emacspeak-path ()
+  "A textual agent header should not be replaced by semantic fallback speech."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode
+          header-line-format "Codex text header")
+    (cl-letf (((symbol-function 'format-mode-line)
+               (lambda (&rest _) "Codex text header")))
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell--speak-focus-header-if-needed))))))
+
+(ert-deftest emacspeak-agent-shell-explicit-header-command-speaks-full-state ()
+  "The explicit header command should stop chatter and read full state."
+  (cl-letf (((symbol-function 'emacspeak-agent-shell--header-state)
+             (lambda (&optional _buffer)
+               '(:agent "Codex agent"
+                 :project "emacspeak-support"
+                 :model "GPT-5.6-Sol"))))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell-speak-header))
+      '((stop nil)
+        (icon item)
+        (speak
+         "Codex agent. Project emacspeak-support. Model GPT-5.6-Sol."))))))
 
 (ert-deftest emacspeak-agent-shell-delayed-agent-message-speaks-once ()
   "A complete agent message should be delivered once."

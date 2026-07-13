@@ -176,30 +176,15 @@ both, or neither kind of title."
 (defun emacspeak-agent-shell-speech-setup ()
   "Speech setup for agent-shell."
   (cl-declare (special
-               emacspeak-speak-time-brief-format
-               agent-shell-mode-map
                emacspeak-pronounce-sha-checksum-pattern
                emacspeak-pronounce-date-mm-dd-yyyy-pattern
                emacspeak-pronounce-date-yyyy-mm-dd-pattern
                emacspeak-pronounce-rfc-3339-datetime-pattern
-               header-line-format emacspeak-use-header-line
                emacspeak-comint-autospeak))
   (setq buffer-undo-list t)
   ;; Enable autospeak by default for agent-shell buffers
   (unless (local-variable-p 'emacspeak-comint-autospeak)
     (setq-local emacspeak-comint-autospeak t))
-  (when emacspeak-use-header-line
-    (setq
-     header-line-format
-     '((:eval
-        (concat
-         (format-time-string emacspeak-speak-time-brief-format)
-         (propertize (buffer-name) 'personality voice-annotate)
-         (abbreviate-file-name default-directory)
-         (when emacspeak-comint-autospeak
-           (propertize "Autospeak" 'personality voice-lighten))
-         (when (> (length (window-list)) 1)
-           (format "%s" (length (window-list)))))))))
   (dtk-set-punctuations 'all)
   (emacspeak-pronounce-add-dictionary-entry
    'agent-shell-mode
@@ -376,6 +361,199 @@ Signal a user error when BUFFER is neither a shell nor an associated viewport."
                  (agent-shell-viewport--shell-buffer candidate))
             (user-error "This viewport has no agent-shell session")))
        (t (user-error "Not in an agent-shell session"))))))
+
+(defun emacspeak-agent-shell--nonempty-text (value)
+  "Return VALUE as trimmed plain text, or nil when it has no text."
+  (when (stringp value)
+    (let ((text (string-trim (substring-no-properties value))))
+      (unless (string-empty-p text) text))))
+
+(defun emacspeak-agent-shell--agent-name (state)
+  "Return the spoken agent name represented by STATE."
+  (when-let* ((name
+               (emacspeak-agent-shell--nonempty-text
+                (map-nested-elt state '(:agent-config :buffer-name)))))
+    (if (string-match-p "\\bagent\\'" (downcase name))
+        name
+      (format "%s agent" name))))
+
+(defun emacspeak-agent-shell--context-percentage (state)
+  "Return the displayed context percentage represented by STATE."
+  (when (bound-and-true-p agent-shell-show-context-usage-indicator)
+    (let* ((usage (map-elt state :usage))
+           (used (map-elt usage :context-used))
+           (size (map-elt usage :context-size)))
+      (when (and (numberp used) (numberp size) (> size 0))
+        (round (/ (* 100.0 used) size))))))
+
+(defun emacspeak-agent-shell--viewport-position ()
+  "Return the current viewport position as a spoken string, or nil.
+This isolates agent-shell's private viewport position API so upstream drift is
+easy to detect and adapt."
+  (when (derived-mode-p 'agent-shell-viewport-view-mode
+                        'agent-shell-viewport-edit-mode)
+    (when-let* ((position
+                 (or (and (boundp 'agent-shell-viewport--position-cache)
+                          agent-shell-viewport--position-cache)
+                     (and (fboundp 'agent-shell-viewport--position)
+                          (ignore-errors
+                            (agent-shell-viewport--position)))))
+                (current (map-elt position :current))
+                (total (map-elt position :total)))
+      (format "%s of %s" current total))))
+
+(defun emacspeak-agent-shell--header-state (&optional buffer)
+  "Return semantic header state for BUFFER, or nil when unavailable.
+BUFFER may be an agent shell or one of its viewports.  Access to the private
+aggregate `agent-shell--state' is kept here so compatibility changes remain
+localized; individual model, thought-level, mode, and busy values use public
+accessors where agent-shell provides them."
+  (let* ((target (or buffer (current-buffer)))
+         (viewport-p
+          (with-current-buffer target
+            (derived-mode-p 'agent-shell-viewport-view-mode
+                            'agent-shell-viewport-edit-mode)))
+         (position
+          (when viewport-p
+            (with-current-buffer target
+              (emacspeak-agent-shell--viewport-position))))
+         (viewport-mode
+          (when viewport-p
+            (with-current-buffer target major-mode)))
+         (shell-buffer
+          (condition-case nil
+              (emacspeak-agent-shell--session-buffer target)
+            (error nil))))
+    (when (buffer-live-p shell-buffer)
+      (with-current-buffer shell-buffer
+        (when-let* ((state
+                     (and (boundp 'agent-shell--state)
+                          agent-shell--state)))
+          (let* ((busy
+                  (or (and (fboundp 'shell-maker-busy)
+                           (ignore-errors (shell-maker-busy)))
+                      (eq 'busy
+                          (map-nested-elt state '(:heartbeat :status)))))
+                 (project
+                  (emacspeak-agent-shell--nonempty-text
+                   (and (fboundp 'agent-shell--project-name)
+                        (ignore-errors (agent-shell--project-name)))))
+                 (status
+                  (when viewport-p
+                    (cond
+                     ((and busy
+                           (eq viewport-mode
+                               'agent-shell-viewport-edit-mode))
+                      "edit queue")
+                     (busy "busy")
+                     ((eq viewport-mode 'agent-shell-viewport-edit-mode)
+                      "edit")
+                     (t "view")))))
+            (list
+             :agent (or (emacspeak-agent-shell--agent-name state)
+                        (emacspeak-agent-shell--session-label shell-buffer))
+             :project project
+             :busy busy
+             :viewport-position position
+             :viewport-status status
+             :model
+             (emacspeak-agent-shell--nonempty-text
+              (and (fboundp 'agent-shell-get-model-name)
+                   (ignore-errors (agent-shell-get-model-name state))))
+             :thought-level
+             (emacspeak-agent-shell--nonempty-text
+              (and (fboundp 'agent-shell-get-thought-level-name)
+                   (ignore-errors
+                     (agent-shell-get-thought-level-name state))))
+             :mode
+             (emacspeak-agent-shell--nonempty-text
+              (and (fboundp 'agent-shell-get-mode-name)
+                   (ignore-errors (agent-shell-get-mode-name state))))
+             :context-percentage
+             (emacspeak-agent-shell--context-percentage state)
+             :session-id
+             (when (bound-and-true-p agent-shell-show-session-id)
+               (emacspeak-agent-shell--nonempty-text
+                (map-nested-elt state '(:session :id)))))))))))
+
+(defun emacspeak-agent-shell--format-brief-header (state)
+  "Return a concise focus announcement for semantic header STATE."
+  (let ((parts
+         (delq
+          nil
+          (list
+           (plist-get state :agent)
+           (plist-get state :project)
+           (when-let* ((position (plist-get state :viewport-position)))
+             (format "viewport %s" position))
+           (or (plist-get state :viewport-status)
+               (and (plist-get state :busy) "busy"))))))
+    (when parts
+      (concat (mapconcat #'identity parts ", ") "."))))
+
+(defun emacspeak-agent-shell--format-full-header (state)
+  "Return a full spoken description of semantic header STATE."
+  (let ((parts
+         (delq
+          nil
+          (list
+           (plist-get state :agent)
+           (when-let* ((project (plist-get state :project)))
+             (format "Project %s" project))
+           (when (and (plist-get state :busy)
+                      (not (plist-get state :viewport-status)))
+             "Busy")
+           (when-let* ((position (plist-get state :viewport-position)))
+             (format "Viewport %s" position))
+           (when-let* ((status (plist-get state :viewport-status)))
+             (concat (upcase (substring status 0 1))
+                     (substring status 1)))
+           (when-let* ((model (plist-get state :model)))
+             (format "Model %s" model))
+           (when-let* ((thought (plist-get state :thought-level)))
+             (format "Thought level %s" thought))
+           (when-let* ((mode (plist-get state :mode)))
+             (format "Mode %s" mode))
+           (when-let* ((percentage
+                        (plist-get state :context-percentage)))
+             (format "Context %d percent" percentage))
+           (when-let* ((session-id (plist-get state :session-id)))
+             (format "Session ID %s" session-id))))))
+    (when parts
+      (concat (mapconcat #'identity parts ". ") "."))))
+
+(defun emacspeak-agent-shell--unspoken-graphical-header-p ()
+  "Return non-nil when the current agent header has no speakable text."
+  (and header-line-format
+       (derived-mode-p 'agent-shell-mode
+                       'agent-shell-viewport-view-mode
+                       'agent-shell-viewport-edit-mode)
+       (string-empty-p
+        (string-trim
+         (substring-no-properties
+          (or (format-mode-line header-line-format) ""))))))
+
+(defun emacspeak-agent-shell--speak-focus-header-if-needed ()
+  "Speak the concise semantic header when its graphical form is inaccessible.
+Return non-nil when an announcement was delivered."
+  (when (emacspeak-agent-shell--unspoken-graphical-header-p)
+    (when-let* ((state (emacspeak-agent-shell--header-state))
+                (speech
+                 (emacspeak-agent-shell--format-brief-header state)))
+      (emacspeak-icon 'item)
+      (dtk-notify speech)
+      t)))
+
+(defun emacspeak-agent-shell-speak-header ()
+  "Speak the full semantic header for the current agent-shell session."
+  (interactive)
+  (let* ((state
+          (or (emacspeak-agent-shell--header-state)
+              (user-error "Agent header state is unavailable")))
+         (speech (emacspeak-agent-shell--format-full-header state)))
+    (dtk-stop)
+    (emacspeak-icon 'item)
+    (dtk-speak speech)))
 
 (defun emacspeak-agent-shell--next-speech-level (level)
   "Return the speech level following LEVEL in the interactive cycle."
@@ -847,6 +1025,11 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
          (dtk-speak trimmed-content))))))
 
 ;;;  Advice Agent-Shell Functions
+
+(defadvice emacspeak-speak-header-line (around emacspeak pre act comp)
+  "Speak semantic agent-shell state when a graphical header has no text."
+  (or (emacspeak-agent-shell--speak-focus-header-if-needed)
+      ad-do-it))
 
 (defadvice agent-shell (after emacspeak pre act comp)
   "Announce switching to agent-shell mode.
@@ -2490,7 +2673,8 @@ the corresponding buffer boundary."
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
-  '((agent-shell after)
+  '((emacspeak-speak-header-line around)
+    (agent-shell after)
     (agent-shell-start after)
     (agent-shell-new-shell after)
     (agent-shell-toggle after)

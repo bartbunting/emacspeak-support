@@ -36,6 +36,9 @@ Completed so far:
   icon-only, summary, and full-output verbosity;
 - current viewport compose submission and accepted-cancellation feedback,
   including suppression of false success and declined-cancellation cues;
+- preservation of agent-shell's text and graphical headers, with concise
+  semantic focus speech for otherwise silent SVG headers and a full-state
+  interactive reading command;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -249,8 +252,14 @@ to both existing and newly created shell buffers.
   chatter.  Background output defaults to completion notifications with a
   session prefix; verbose background response speech is opt-in.  Permissions
   and errors remain audible at the quiet routine level.
-- Preserve agent-shell's header-line information and add speech access to it
-  instead of replacing it.
+- Preserve agent-shell's header-line information instead of replacing it.
+  When a graphical header has no textual representation, entering the buffer
+  speaks a concise semantic summary: agent, project, viewport position and
+  status, or busy state.  An explicit command reads the full state on demand,
+  adding model, thought level, session mode, context usage, and the optional
+  session ID.  Animated busy frames are represented once as "busy", and
+  graphical key-binding hints remain available through agent-shell help rather
+  than being read on every focus change.
 
 ## Implementation Phases
 
