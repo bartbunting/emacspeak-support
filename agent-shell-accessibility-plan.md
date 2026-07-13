@@ -1,6 +1,6 @@
 # Agent Shell Accessibility Plan
 
-Status: proposed
+Status: in progress
 
 Audit date: 2026-07-13
 
@@ -21,6 +21,21 @@ thought and tool-output verbosity settings, basic navigation feedback,
 permission intent, and processing earcons.  The main work is to make those
 features semantic, reliable across streaming updates, and aligned with
 agent-shell's current public interfaces.
+
+## Implementation Progress
+
+Completed so far:
+
+- deterministic speech collectors and upstream traffic-fixture replay;
+- public permission request and response subscriptions, including simultaneous
+  requests, semantic choices, focus feedback, and response confirmation; and
+- public initialization, input, turn-completion, and error feedback with
+  distinct normal, cancelled, limited, refused, and failed outcomes.
+
+The lifecycle event path replaces heartbeat advice and suppresses delayed
+rendered duplicates without discarding pending agent response text.  Tool and
+idle events, background-session identity, and the remaining compatibility
+failures are still open Phase 0/1 work.
 
 ## Findings
 

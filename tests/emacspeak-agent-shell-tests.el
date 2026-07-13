@@ -16,9 +16,13 @@
 (require 'emacspeak-agent-shell)
 
 (defvar emacspeak-agent-shell--advice-list)
+(defvar emacspeak-agent-shell--lifecycle-subscription)
 (defvar emacspeak-agent-shell--permission-action-cache)
 (defvar emacspeak-agent-shell--permission-response-subscription)
 (defvar emacspeak-agent-shell--permission-subscription)
+(defvar emacspeak-agent-shell-processing-end-icon)
+(defvar emacspeak-agent-shell-processing-start-icon)
+(defvar emacspeak-agent-shell-signal-processing)
 (defvar emacspeak-agent-shell-speak-permissions)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
@@ -27,6 +31,12 @@
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--handle-permission-response
                   "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--handle-lifecycle-event
+                  "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--lifecycle-event-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--lifecycle-event-setup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-button-feedback
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-event-cleanup
@@ -264,11 +274,19 @@ ENTRIES is an alist of qualified block IDs to body strings."
           (emacspeak-agent-shell-enable)
           (should (memq #'emacspeak-agent-shell-speech-setup
                         agent-shell-mode-hook))
+          (should (memq #'emacspeak-agent-shell--permission-event-setup
+                        agent-shell-mode-hook))
+          (should (memq #'emacspeak-agent-shell--lifecycle-event-setup
+                        agent-shell-mode-hook))
           (dolist (entry emacspeak-agent-shell--advice-list)
             (when (fboundp (car entry))
               (should (ad-is-active (car entry)))))
           (emacspeak-agent-shell-disable)
           (should-not (memq #'emacspeak-agent-shell-speech-setup
+                            agent-shell-mode-hook))
+          (should-not (memq #'emacspeak-agent-shell--permission-event-setup
+                            agent-shell-mode-hook))
+          (should-not (memq #'emacspeak-agent-shell--lifecycle-event-setup
                             agent-shell-mode-hook))
           (dolist (entry emacspeak-agent-shell--advice-list)
             (should-not (ad-is-active (car entry)))))
@@ -434,6 +452,143 @@ ENTRIES is an alist of qualified block IDs to body strings."
             first nil t)))
         '((icon close-object)
           (speak "Permission cancelled.")))))))
+
+(ert-deftest emacspeak-agent-shell-lifecycle-transitions-are-semantic ()
+  "Public lifecycle events should distinguish processing transitions."
+  (let ((emacspeak-agent-shell-signal-processing t)
+        (emacspeak-agent-shell-processing-start-icon 'progress)
+        (emacspeak-agent-shell-processing-end-icon 'task-done))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (dolist (event '(((:event . init-started))
+                         ((:event . init-finished))
+                         ((:event . input-submitted))
+                         ((:event . turn-complete)
+                          (:data (:stop-reason . "end_turn")))))
+          (emacspeak-agent-shell--handle-lifecycle-event event)))
+      '((icon progress)
+        (icon task-done)
+        (icon progress)
+        (icon task-done))))))
+
+(ert-deftest emacspeak-agent-shell-exceptional-lifecycle-is-spoken ()
+  "Exceptional turn completions and ACP errors should be unambiguous."
+  (let ((emacspeak-agent-shell-signal-processing t))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (dolist (event '(((:event . turn-complete)
+                          (:data (:stop-reason . "cancelled")))
+                         ((:event . turn-complete)
+                          (:data (:stop-reason . "max_tokens")))
+                         ((:event . turn-complete)
+                          (:data (:stop-reason . "max_turn_requests")))
+                         ((:event . turn-complete)
+                          (:data (:stop-reason . "refusal")))
+                         ((:event . turn-complete)
+                          (:data (:stop-reason . "agent_shutdown")))
+                         ((:event . turn-complete))
+                         ((:event . error)
+                          (:data (:code . 500)
+                                 (:message . "Connection lost.")))))
+          (emacspeak-agent-shell--handle-lifecycle-event event)))
+      '((icon close-object)
+        (speak "Agent turn cancelled.")
+        (icon warn-user)
+        (speak "Agent stopped: maximum token limit reached.")
+        (icon warn-user)
+        (speak "Agent stopped: request limit reached.")
+        (icon warn-user)
+        (speak "Agent refused the request.")
+        (icon warn-user)
+        (speak "Agent stopped: agent shutdown.")
+        (icon warn-user)
+        (speak "Agent stopped for an unknown reason.")
+        (icon warn-user)
+        (speak "Agent error: Connection lost."))))))
+
+(ert-deftest emacspeak-agent-shell-lifecycle-subscription-is-idempotent ()
+  "Lifecycle events should subscribe once, dispatch, and clean up."
+  (let ((buffer (generate-new-buffer " *agent-shell-lifecycle-test*"))
+        (emacspeak-agent-shell-signal-processing t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local agent-shell--state
+                      (list (cons :buffer buffer)
+                            (cons :event-subscriptions nil)))
+          (emacspeak-agent-shell--lifecycle-event-setup)
+          (let ((token emacspeak-agent-shell--lifecycle-subscription))
+            (emacspeak-agent-shell--lifecycle-event-setup)
+            (should (equal token
+                           emacspeak-agent-shell--lifecycle-subscription))
+            (should (= 1 (length (map-elt
+                                  agent-shell--state
+                                  :event-subscriptions)))))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (cl-letf (((symbol-function 'agent-shell--sync-system-sleep)
+                         #'ignore))
+                (agent-shell--emit-event :event 'input-submitted)
+                (agent-shell--emit-event
+                 :event 'turn-complete
+                 :data '((:stop-reason . "end_turn")))))
+            '((icon progress)
+              (icon task-done))))
+          (emacspeak-agent-shell--lifecycle-event-cleanup)
+          (should-not emacspeak-agent-shell--lifecycle-subscription)
+          (should-not (map-elt agent-shell--state :event-subscriptions)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-lifecycle-suppresses-rendered-duplicate ()
+  "Public error feedback should preserve content but drop its visual duplicate."
+  (let ((emacspeak-agent-shell-signal-processing t)
+        timer)
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local emacspeak-agent-shell--pending-bodies
+                      (make-hash-table :test #'equal))
+          (puthash "1-agent_message_chunk" "Useful partial response"
+                   emacspeak-agent-shell--pending-bodies)
+          (puthash "1-failed-1-id:?-code:500" "Connection lost"
+                   emacspeak-agent-shell--pending-bodies)
+          (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                      '("1-agent_message_chunk"
+                        "1-failed-1-id:?-code:500"))
+          (setq timer (run-with-timer 3600 nil #'ignore))
+          (setq-local emacspeak-agent-shell--pending-speech-timer timer)
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (emacspeak-agent-shell--handle-lifecycle-event
+               '((:event . error)
+                 (:data (:message . "Connection lost")))))
+            '((icon warn-user)
+              (speak "Agent error: Connection lost"))))
+          (should (gethash "1-agent_message_chunk"
+                           emacspeak-agent-shell--pending-bodies))
+          (should-not (gethash "1-failed-1-id:?-code:500"
+                               emacspeak-agent-shell--pending-bodies))
+          (should
+           (equal emacspeak-agent-shell--pending-speech-qualified-ids
+                  '("1-agent_message_chunk")))
+          (should (timerp emacspeak-agent-shell--pending-speech-timer)))
+      (when (timerp timer)
+        (cancel-timer timer)))))
+
+(ert-deftest emacspeak-agent-shell-lifecycle-feedback-can-be-disabled ()
+  "The lifecycle option should suppress all lifecycle feedback."
+  (let ((emacspeak-agent-shell-signal-processing nil))
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (emacspeak-agent-shell--handle-lifecycle-event
+        '((:event . input-submitted)))
+       (emacspeak-agent-shell--handle-lifecycle-event
+        '((:event . error)
+          (:data (:message . "Connection lost"))))))))
 
 (ert-deftest emacspeak-agent-shell-permission-button-feedback-is-semantic ()
   "Focused permission feedback should include choice position and key."

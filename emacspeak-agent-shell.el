@@ -103,12 +103,11 @@ When t, permission requests are spoken as soon as they appear."
   :group 'emacspeak-agent-shell)
 
 (defcustom emacspeak-agent-shell-signal-processing t
-  "Whether to play auditory icons marking the model's processing state.
-When non-nil, a start icon is played the moment the model begins
-processing a prompt and an end icon is played when generation
-finishes (or fails).  The agent-shell heartbeat is used as the
-underlying processing signal, so the icons fire even during
-initial handshake/authentication."
+  "Whether to announce the agent's processing lifecycle.
+When non-nil, public agent-shell events produce start and completion
+icons.  Exceptional completion and error events also produce a brief
+spoken explanation.  Initialization has its own start and completion
+cues."
   :type 'boolean
   :group 'emacspeak-agent-shell)
 
@@ -212,6 +211,9 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 
 (defvar-local emacspeak-agent-shell--permission-action-cache nil
   "Hash table mapping pending permission requests to normalized actions.")
+
+(defvar-local emacspeak-agent-shell--lifecycle-subscription nil
+  "Subscription token for lifecycle events in this shell.")
 
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
@@ -362,6 +364,104 @@ chunk arrives before speaking the complete text."
                #'emacspeak-agent-shell--permission-event-cleanup t)
   (remove-hook 'change-major-mode-hook
                #'emacspeak-agent-shell--permission-event-cleanup t))
+
+(defun emacspeak-agent-shell--discard-pending-blocks (regexp)
+  "Discard delayed speech whose qualified block ID matches REGEXP.
+Leave unrelated pending agent content and its timer intact."
+  (when (hash-table-p emacspeak-agent-shell--pending-bodies)
+    (dolist (qualified-id emacspeak-agent-shell--pending-speech-qualified-ids)
+      (when (string-match-p regexp qualified-id)
+        (remhash qualified-id emacspeak-agent-shell--pending-bodies)))
+    (setq emacspeak-agent-shell--pending-speech-qualified-ids
+          (seq-remove
+           (lambda (qualified-id) (string-match-p regexp qualified-id))
+           emacspeak-agent-shell--pending-speech-qualified-ids))
+    (when (and (null emacspeak-agent-shell--pending-speech-qualified-ids)
+               (timerp emacspeak-agent-shell--pending-speech-timer))
+      (cancel-timer emacspeak-agent-shell--pending-speech-timer)
+      (setq emacspeak-agent-shell--pending-speech-timer nil))))
+
+(defun emacspeak-agent-shell--speak-agent-error (event)
+  "Announce the ACP error described by lifecycle EVENT."
+  (emacspeak-agent-shell--discard-pending-blocks
+   "-\\(?:failed-\\|Error\\(?:-\\|$\\)\\)")
+  (let* ((data (map-elt event :data))
+         (message (map-elt data :message))
+         (code (map-elt data :code))
+         (detail
+          (cond
+           ((and (stringp message) (not (string-empty-p (string-trim message))))
+            (string-trim (substring-no-properties message)))
+           (code (format "code %s" code))
+           (t nil))))
+    (emacspeak-icon 'warn-user)
+    (dtk-speak (if detail
+                   (format "Agent error: %s" detail)
+                 "Agent error."))))
+
+(defun emacspeak-agent-shell--speak-turn-completion (event)
+  "Announce the outcome described by turn completion EVENT."
+  (let ((stop-reason (map-nested-elt event '(:data :stop-reason))))
+    (if (equal stop-reason "end_turn")
+        (emacspeak-icon emacspeak-agent-shell-processing-end-icon)
+      (emacspeak-agent-shell--discard-pending-blocks "-stop-reason$")
+      (pcase stop-reason
+        ("cancelled"
+         (emacspeak-icon 'close-object)
+         (dtk-speak "Agent turn cancelled."))
+        ("max_tokens"
+         (emacspeak-icon 'warn-user)
+         (dtk-speak "Agent stopped: maximum token limit reached."))
+        ("max_turn_requests"
+         (emacspeak-icon 'warn-user)
+         (dtk-speak "Agent stopped: request limit reached."))
+        ("refusal"
+         (emacspeak-icon 'warn-user)
+         (dtk-speak "Agent refused the request."))
+        ((pred stringp)
+         (emacspeak-icon 'warn-user)
+         (dtk-speak
+          (format "Agent stopped: %s."
+                  (string-replace "_" " " stop-reason))))
+        (_
+         (emacspeak-icon 'warn-user)
+         (dtk-speak "Agent stopped for an unknown reason."))))))
+
+(defun emacspeak-agent-shell--handle-lifecycle-event (event)
+  "Provide semantic processing feedback for public agent-shell EVENT."
+  (when emacspeak-agent-shell-signal-processing
+    (pcase (map-elt event :event)
+      ((or 'init-started 'input-submitted)
+       (emacspeak-icon emacspeak-agent-shell-processing-start-icon))
+      ('init-finished
+       (emacspeak-icon emacspeak-agent-shell-processing-end-icon))
+      ('turn-complete
+       (emacspeak-agent-shell--speak-turn-completion event))
+      ('error
+       (emacspeak-agent-shell--speak-agent-error event)))))
+
+(defun emacspeak-agent-shell--lifecycle-event-setup ()
+  "Subscribe the current agent-shell buffer to lifecycle events."
+  (unless emacspeak-agent-shell--lifecycle-subscription
+    (setq emacspeak-agent-shell--lifecycle-subscription
+          (agent-shell-subscribe-to
+           :shell-buffer (current-buffer)
+           :on-event #'emacspeak-agent-shell--handle-lifecycle-event)))
+  (add-hook 'kill-buffer-hook
+            #'emacspeak-agent-shell--lifecycle-event-cleanup nil t)
+  (add-hook 'change-major-mode-hook
+            #'emacspeak-agent-shell--lifecycle-event-cleanup nil t))
+
+(defun emacspeak-agent-shell--lifecycle-event-cleanup ()
+  "Remove the current buffer's lifecycle event subscription."
+  (when emacspeak-agent-shell--lifecycle-subscription
+    (agent-shell-unsubscribe
+     :subscription emacspeak-agent-shell--lifecycle-subscription)
+    (setq emacspeak-agent-shell--lifecycle-subscription nil))
+  (remove-hook 'kill-buffer-hook
+               #'emacspeak-agent-shell--lifecycle-event-cleanup t)
+  (remove-hook 'change-major-mode-hook
+               #'emacspeak-agent-shell--lifecycle-event-cleanup t))
 
 (defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
   "Execute delayed speech of blocks identified by QUALIFIED-IDS in BUFFER.
@@ -707,32 +807,6 @@ and speak them after streaming pauses for a brief period."
         (when title
           (message "Tool: %s - %s" title status))))))
 
-;;;  Processing State Signals
-
-(defadvice agent-shell-heartbeat-start (before emacspeak pre act comp)
-  "Play an auditory icon when the model starts processing a prompt.
-Fires only on the idle->busy transition so repeated start calls
-do not stack earcons."
-  (cl-declare (special emacspeak-agent-shell-signal-processing
-                       emacspeak-agent-shell-processing-start-icon))
-  (when emacspeak-agent-shell-signal-processing
-    (let* ((heartbeat (plist-get (ad-get-args 0) :heartbeat))
-           (timer (and heartbeat (map-elt heartbeat :heartbeat-timer))))
-      (unless (and timer (timerp timer))
-        (emacspeak-icon emacspeak-agent-shell-processing-start-icon)))))
-
-(defadvice agent-shell-heartbeat-stop (before emacspeak pre act comp)
-  "Play an auditory icon when the model finishes processing.
-Fires only on the busy->idle transition so repeated stop calls
-do not stack earcons."
-  (cl-declare (special emacspeak-agent-shell-signal-processing
-                       emacspeak-agent-shell-processing-end-icon))
-  (when emacspeak-agent-shell-signal-processing
-    (let* ((heartbeat (plist-get (ad-get-args 0) :heartbeat))
-           (timer (and heartbeat (map-elt heartbeat :heartbeat-timer))))
-      (when (and timer (timerp timer))
-        (emacspeak-icon emacspeak-agent-shell-processing-end-icon)))))
-
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
@@ -757,9 +831,7 @@ do not stack earcons."
     (agent-shell-viewport-submit after)
     (agent-shell-viewport-view-mode after)
     (agent-shell-viewport-edit-mode after)
-    (agent-shell--save-tool-call after)
-    (agent-shell-heartbeat-start before)
-    (agent-shell-heartbeat-stop before))
+    (agent-shell--save-tool-call after))
   "List of advised functions for Emacspeak agent-shell support.")
 
 (defun emacspeak-agent-shell-enable ()
@@ -771,10 +843,13 @@ do not stack earcons."
   (add-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
   (add-hook 'agent-shell-mode-hook
             #'emacspeak-agent-shell--permission-event-setup)
+  (add-hook 'agent-shell-mode-hook
+            #'emacspeak-agent-shell--lifecycle-event-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'agent-shell-mode)
-        (emacspeak-agent-shell--permission-event-setup))))
+        (emacspeak-agent-shell--permission-event-setup)
+        (emacspeak-agent-shell--lifecycle-event-setup))))
   (message "Enabled Emacspeak agent-shell support"))
 
 (defun emacspeak-agent-shell-disable ()
@@ -786,12 +861,16 @@ do not stack earcons."
   (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
   (remove-hook 'agent-shell-mode-hook
                #'emacspeak-agent-shell--permission-event-setup)
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--lifecycle-event-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
-      (when (and (derived-mode-p 'agent-shell-mode)
-                 (or emacspeak-agent-shell--permission-subscription
-                     emacspeak-agent-shell--permission-response-subscription))
-        (emacspeak-agent-shell--permission-event-cleanup))))
+      (when (derived-mode-p 'agent-shell-mode)
+        (when (or emacspeak-agent-shell--permission-subscription
+                  emacspeak-agent-shell--permission-response-subscription)
+          (emacspeak-agent-shell--permission-event-cleanup))
+        (when emacspeak-agent-shell--lifecycle-subscription
+          (emacspeak-agent-shell--lifecycle-event-cleanup)))))
   (message "Disabled Emacspeak agent-shell support"))
 
 (provide 'emacspeak-agent-shell)
