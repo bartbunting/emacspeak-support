@@ -112,6 +112,10 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-copy-cell
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-copy-column
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-copy-row
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-exit-backward
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-exit-forward
@@ -1746,6 +1750,36 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           :type 'user-error)))
       (should (equal (car kill-ring) "")))))
 
+(ert-deftest emacspeak-agent-shell-table-copy-row-and-column-are-plain ()
+  "Row and column copying should use tabular plain-text separators."
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| Name | Value |\n|---|---|\n| Alice | `a|b` |\n| Bob | two |\n"
+      (goto-char (point-min))
+      (search-forward "a|b")
+      (backward-char (length "a|b"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-copy-row))
+        '((icon save-object) (speak "Copied table row."))))
+      (should (equal (car kill-ring) "Alice\ta|b"))
+      (should-not (text-properties-at 0 (car kill-ring)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-copy-column))
+        '((icon save-object) (speak "Copied table column."))))
+      (should (equal (car kill-ring) "Value\na|b\ntwo"))
+      (should-not (text-properties-at 0 (car kill-ring))))
+    (with-temp-buffer
+      (insert "outside")
+      (dolist (command '(emacspeak-agent-shell-table-copy-row
+                         emacspeak-agent-shell-table-copy-column))
+        (should-error (call-interactively command) :type 'user-error))
+      (should (equal (car kill-ring) "Value\na|b\ntwo")))))
+
 (ert-deftest emacspeak-agent-shell-table-grid-navigation-is-logical ()
   "Grid movement should retain row/column identity across visual wrapping."
   (let ((emacspeak-agent-shell-table-titles '(column row))
@@ -1869,6 +1903,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
              ("." . ,#'emacspeak-agent-shell-table-speak-context)
              ("=" . ,#'emacspeak-agent-shell-table-speak-dimensions)
              ("w" . ,#'emacspeak-agent-shell-table-copy-cell)
+             ("k k" . ,#'emacspeak-agent-shell-table-copy-cell)
+             ("k r" . ,#'emacspeak-agent-shell-table-copy-row)
+             ("k c" . ,#'emacspeak-agent-shell-table-copy-column)
              ("a" . ,#'emacspeak-agent-shell-table-select-speaking-method)
              ("M-<up>" . ,#'emacspeak-agent-shell-table-exit-backward)
              ("M-<down>" . ,#'emacspeak-agent-shell-table-exit-forward)))

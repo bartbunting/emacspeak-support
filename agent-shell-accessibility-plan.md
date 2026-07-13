@@ -40,17 +40,18 @@ Completed so far:
   an interactive speech-method selector plus manual position/dimension
   context, directional table-entry announcements, and logical whole-row and
   whole-column reading, plus logical cell copying without rendered padding or
-  borders; contextual two-dimensional arrow navigation that ignores Markdown
-  separators and visual wrapping; direct row, column, cell, context,
-  dimensions, settings, and copy keys; and natural or explicit table exit; and
+  borders and logical row/column copying as tabular plain text; contextual
+  two-dimensional arrow navigation that ignores Markdown separators and
+  visual wrapping; direct row, column, cell, context, dimensions, settings,
+  and copy keys; and natural or explicit table exit; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
 The lifecycle event path replaces heartbeat advice and suppresses delayed
 rendered duplicates without discarding pending agent response text.  Tool
 events likewise replace asynchronous private save advice and avoid repeating
-rendered tool output.  Idle events, background-session identity, and two
-remaining compatibility failures are still open Phase 0/1 work.
+rendered tool output.  Idle events, background-session identity, and the
+remaining face-map compatibility failure are still open Phase 0/1 work.
 
 ### Markdown Table Keys
 
@@ -61,8 +62,9 @@ agent-shell Markdown table:
 - `TAB` and `Shift-TAB` retain agent-shell's sequential cell navigation;
 - `r`, `c`, `SPC`, `.`, and `=` speak the row, column, cell, context, and
   dimensions respectively;
-- `w` copies the unpadded logical cell and `a` changes table speech settings;
-  and
+- `k k` copies the unpadded logical cell, `k r` copies its row with tab-separated
+  cells, and `k c` copies its column with newline-separated cells; `w` remains
+  an alias for copying the cell, and `a` changes table speech settings; and
 - `M-Up` and `M-Down` leave directly before or after the table.  Up at the
   first logical row and Down at the last row provide the same exit behavior.
 
@@ -135,9 +137,9 @@ session selector controls the backing shell from viewport mode.  Selecting
   announcement policy or buffer identity.  Focus-aware levels now suppress
   background response and tool chatter by default; completed background turns
   use the notification stream and identify their session.
-- Agent-shell does not currently provide a current-table-cell value or copy
-  command.  The local logical-cell copy command should be replaced by advice
-  that adds speech feedback if agent-shell gains a native command.
+- Agent-shell does not currently provide current-table-cell values or copy
+  commands.  The local logical cell, row, and column copy commands should be
+  replaced by advice if agent-shell adds suitable native commands.
 
 ### Features With Little or No Semantic Support
 

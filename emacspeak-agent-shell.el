@@ -1241,18 +1241,52 @@ Markdown renderer."
 
 ;; Agent-shell does not currently expose a current-cell value or copy command.
 ;; Prefer speech-enabling that command if agent-shell adds one in the future.
+(defun emacspeak-agent-shell--table-plain-cell (data)
+  "Return table cell DATA without padding or text properties."
+  (substring-no-properties (string-trim (or data ""))))
+
+(defun emacspeak-agent-shell--table-copy (text object)
+  "Copy plain TEXT to the kill ring and announce copied table OBJECT."
+  (kill-new (substring-no-properties text))
+  (emacspeak-icon 'save-object)
+  (dtk-speak (format "Copied table %s." object)))
+
 (defun emacspeak-agent-shell-table-copy-cell ()
   "Copy the logical Markdown table cell at point to the kill ring.
 Remove renderer padding, borders, and text properties.  Preserve the complete
 logical value of a wrapped cell."
   (interactive)
   (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
-      (let ((data
-             (substring-no-properties
-              (string-trim (or (plist-get cell :data) "")))))
-        (kill-new data)
-        (emacspeak-icon 'save-object)
-        (dtk-speak "Copied table cell."))
+      (emacspeak-agent-shell--table-copy
+       (emacspeak-agent-shell--table-plain-cell (plist-get cell :data))
+       "cell")
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-copy-row ()
+  "Copy the logical Markdown table row at point to the kill ring.
+Separate cells with tabs and omit Markdown separator syntax."
+  (interactive)
+  (if-let* ((cell (emacspeak-agent-shell--markdown-table-cell-at-point))
+            (row (nth (plist-get cell :row-index)
+                      (plist-get cell :rows))))
+      (emacspeak-agent-shell--table-copy
+       (mapconcat #'emacspeak-agent-shell--table-plain-cell row "\t")
+       "row")
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-copy-column ()
+  "Copy the logical Markdown table column at point to the kill ring.
+Separate cells with newlines and omit Markdown separator syntax."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (let ((column (plist-get cell :column-index)))
+        (emacspeak-agent-shell--table-copy
+         (mapconcat
+          (lambda (row)
+            (emacspeak-agent-shell--table-plain-cell (nth column row)))
+          (plist-get cell :rows)
+          "\n")
+         "column"))
     (user-error "Not in a rendered Markdown table")))
 
 (defun emacspeak-agent-shell--table-cell-position (cell row column)
@@ -1400,6 +1434,16 @@ Return nil when that logical cell does not exist."
                 #'emacspeak-agent-shell-table-select-speaking-method)
     map)
   "Contextual keymap active while point is in a rendered Markdown table.")
+
+(defun emacspeak-agent-shell--install-table-copy-bindings ()
+  "Install reload-safe table copying keys in the contextual table map."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "k") #'emacspeak-agent-shell-table-copy-cell)
+    (define-key map (kbd "r") #'emacspeak-agent-shell-table-copy-row)
+    (define-key map (kbd "c") #'emacspeak-agent-shell-table-copy-column)
+    (define-key emacspeak-agent-shell--table-navigation-map (kbd "k") map)))
+
+(emacspeak-agent-shell--install-table-copy-bindings)
 
 (unless (assq 'emacspeak-agent-shell--table-navigation-active
               minor-mode-map-alist)
