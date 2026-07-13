@@ -25,6 +25,8 @@
 (defvar emacspeak-agent-shell--pending-speech-timer)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
+(defvar emacspeak-agent-shell--markdown-face-voice-map)
+(defvar emacspeak-agent-shell--markdown-unvoiced-faces)
 (defvar emacspeak-agent-shell--ui-face-voice-map)
 (defvar emacspeak-agent-shell--ui-unvoiced-faces)
 (defvar emacspeak-agent-shell-background-speech-level)
@@ -46,6 +48,7 @@
 (defvar emacspeak-agent-shell-tool-output-verbosity)
 (defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
+(defvar dtk-yank-excluded-properties)
 (defvar agent-shell--state)
 (defvar agent-shell-header-style)
 (defvar agent-shell-mode-map)
@@ -100,6 +103,10 @@
                   "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell--speak-focus-header-if-needed
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--prepare-speech-text
+                  "emacspeak-agent-shell" (text))
+(declare-function emacspeak-agent-shell--speech-copy-without-yank-handler
+                  "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--install-speech-control-bindings
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-next-block-of-type
@@ -2861,6 +2868,108 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (insert (propertize "status" 'face (car entry)))
       (goto-char (point-min))
       (should (eq (dtk-get-style) (cdr entry))))))
+
+(ert-deftest emacspeak-agent-shell-markdown-face-inventory-is-current ()
+  "Every current agent-shell Markdown face should be classified."
+  (let ((configured
+         (sort
+          (append
+           (mapcar #'car emacspeak-agent-shell--markdown-face-voice-map)
+           emacspeak-agent-shell--markdown-unvoiced-faces
+           nil)
+          (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+        (current
+         (sort
+          (seq-filter
+           (lambda (face)
+             (string-prefix-p "agent-shell-markdown-" (symbol-name face)))
+           (face-list))
+          (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
+    (should (equal configured current))
+    (should (= 17 (length configured)))
+    (dolist (face configured)
+      (should (facep face)))))
+
+(ert-deftest emacspeak-agent-shell-markdown-face-voices-are-explicit ()
+  "Markdown faces should resolve to declared or intentionally plain voices."
+  (dolist (entry emacspeak-agent-shell--markdown-face-voice-map)
+    (should
+     (eq (voice-setup-get-voice-for-face (car entry)) (cadr entry))))
+  (dolist (face emacspeak-agent-shell--markdown-unvoiced-faces)
+    (should-not (voice-setup-get-voice-for-face face))))
+
+(ert-deftest emacspeak-agent-shell-rendered-markdown-has-semantic-voices ()
+  "Actual agent-shell Markdown output should retain the configured voices."
+  (with-temp-buffer
+    (insert
+     (concat
+      "# Heading one\n## Heading two\n### Heading three\n"
+      "#### Heading four\n##### Heading five\n###### Heading six\n\n"
+      "**bold** *italic* ~~obsolete~~ `inline` "
+      "[link](https://example.test)\n\n> quotation\n\n"
+      "```elisp\n(message hello)\n```\n\n"
+      "| Name | Value |\n| --- | --- |\n| One | 1 |\n| Two | 2 |\n"))
+    (agent-shell-markdown-replace-markup)
+    (let ((case-fold-search nil))
+      (dolist
+          (entry
+           '(("Heading one" . voice-brighten)
+             ("Heading two" . voice-animate)
+             ("Heading three" . voice-lighten)
+             ("Heading four" . voice-smoothen)
+             ("Heading five" . voice-monotone)
+             ("Heading six" . voice-monotone-extra)
+             ("bold" . voice-bolden)
+             ("italic" . voice-animate)
+             ("obsolete" . voice-annotate)
+             ("inline" . voice-monotone-extra)
+             ("link" . voice-bolden)
+             ("quotation" . voice-lighten)
+             ("elisp" . voice-smoothen)
+             ("message" . voice-monotone-extra)
+             ("Name" . voice-bolden)
+             ("│" . inaudible)
+             ("Two" . nil)))
+        (goto-char (point-min))
+        (should (search-forward (car entry) nil t))
+        (goto-char (match-beginning 0))
+        (should (eq (dtk-get-style) (cdr entry)))
+        (should (equal (get-text-property (point) 'face)
+                       (get-text-property (point) 'font-lock-face)))))))
+
+(ert-deftest emacspeak-agent-shell-speech-copy-bypasses-plain-yank-handler ()
+  "Speech copies should retain rendered faces without changing normal paste."
+  (with-temp-buffer
+    (insert "# Heading\n\n| Name | Value |\n| --- | --- |\n| One | 1 |\n")
+    (agent-shell-markdown-replace-markup)
+    (let ((rendered (buffer-string)))
+      (should (eq (emacspeak-agent-shell--prepare-speech-text rendered)
+                  rendered))
+      (setq major-mode 'agent-shell-mode)
+      (let ((spoken
+             (emacspeak-agent-shell--prepare-speech-text rendered)))
+        (should
+         (text-property-not-all
+          0 (length rendered) 'yank-handler nil rendered))
+        (should-not
+         (text-property-not-all
+          0 (length spoken) 'yank-handler nil spoken))
+        (should
+         (eq (emacspeak-agent-shell-test--face-at-text spoken "Heading")
+             'agent-shell-markdown-header-1))
+        (should
+         (eq (emacspeak-agent-shell-test--face-at-text spoken "│")
+             'agent-shell-markdown-table-border))
+        ;; Preparing speech must not change agent-shell's clipboard contract.
+        (should
+         (text-property-not-all
+          0 (length (buffer-string)) 'yank-handler nil (buffer-string)))
+        ;; Exercise the same copy primitive used by `dtk-speak'.
+        (with-temp-buffer
+          (let ((yank-excluded-properties dtk-yank-excluded-properties))
+            (insert-for-yank spoken))
+          (goto-char (point-min))
+          (should (eq (dtk-get-style) 'voice-brighten)))))))
 
 (ert-deftest emacspeak-agent-shell-disable-cleans-existing-buffer-state ()
   "Disabling support should cancel pending work in existing shell buffers."

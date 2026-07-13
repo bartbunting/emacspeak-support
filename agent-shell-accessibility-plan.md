@@ -39,11 +39,11 @@ Completed so far:
 - preservation of agent-shell's text and graphical headers, with concise
   semantic focus speech for otherwise silent SVG headers and a full-state
   reading through Emacspeak's standard `C-e m` mode-line command;
-- explicit voice mappings for all current agent-shell interface faces, with
-  semantic contrast for success, busy, failure, and pending states and a
-  deliberately neutral viewport view state; the full `C-e m` header reading
-  applies these voices to its semantic clauses while automatic focus speech
-  remains plain;
+- explicit voice mappings for all current agent-shell core and Markdown faces,
+  with semantic contrast for interface states, Markdown structure, and code;
+  visual table borders are inaudible, zebra striping remains plain, and the
+  full `C-e m` header reading applies core voices to its semantic clauses while
+  automatic focus speech remains plain;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -165,10 +165,13 @@ session selector controls the backing shell from viewport mode.  Selecting
 - Viewport submission advice had drifted from the removed
   `agent-shell-viewport-submit`; it now targets the current compose command and
   remains covered by the advice-target compatibility test.
-- Agent-shell's current interface faces now have explicit voice mappings;
-  Emacspeak's exact-symbol mapping does not inherit them from visual parent
-  faces.  The separate agent-shell Markdown faces remain to be mapped after
-  listening tests establish that the core voice set is useful.
+- Agent-shell's current core and Markdown faces now have explicit voice
+  mappings because Emacspeak's exact-symbol mapping does not inherit them from
+  visual parent faces.  Inventory tests detect newly added upstream faces.
+- Rendered Markdown carries a plain-text `yank-handler` for normal clipboard
+  use.  A `dtk-speak` adapter scoped to shell and viewport buffers removes that
+  handler only from temporary speech copies, preserving faces for audio while
+  leaving copy and paste unchanged.
 - Speech setup now preserves agent-shell's semantic header line; graphical
   headers receive separate concise and full semantic speech paths.  Context
   severity uses the guarded private `agent-shell--context-usage-face` helper
@@ -315,8 +318,8 @@ truncated speech, and restored user messages and unknown blocks remain usable.
 
 ### Phase 3: Navigation, Voices, and Viewport
 
-- Map the remaining agent-shell Markdown faces to appropriate personalities,
-  building on the completed core interface-face map.
+- Maintain the implemented core and Markdown face mappings as agent-shell's
+  rendered interface evolves.
 - Extend the implemented typed block body/status/fold feedback to generic item
   navigation.
 - Add table cell/header context using Emacspeak's tabulated-list patterns.

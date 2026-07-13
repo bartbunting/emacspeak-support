@@ -252,9 +252,56 @@ both, or neither kind of title."
   "Agent-shell interface faces intentionally left without a voice.
 The neutral viewport view face carries no state beyond its spoken text.")
 
+(defconst emacspeak-agent-shell--markdown-face-voice-map
+  '((agent-shell-markdown-bold voice-bolden)
+    (agent-shell-markdown-italic voice-animate)
+    (agent-shell-markdown-strikethrough voice-annotate)
+    (agent-shell-markdown-inline-code voice-monotone-extra)
+    (agent-shell-markdown-link voice-bolden)
+    (agent-shell-markdown-blockquote voice-lighten)
+    (agent-shell-markdown-header-1 voice-brighten)
+    (agent-shell-markdown-header-2 voice-animate)
+    (agent-shell-markdown-header-3 voice-lighten)
+    (agent-shell-markdown-header-4 voice-smoothen)
+    (agent-shell-markdown-header-5 voice-monotone)
+    (agent-shell-markdown-header-6 voice-monotone-extra)
+    (agent-shell-markdown-table-header voice-bolden)
+    (agent-shell-markdown-table-border inaudible)
+    (agent-shell-markdown-source-block voice-monotone-extra)
+    (agent-shell-markdown-source-block-language voice-smoothen))
+  "Voice personalities for current agent-shell Markdown faces.")
+
+(defconst emacspeak-agent-shell--markdown-unvoiced-faces
+  '(agent-shell-markdown-table-zebra)
+  "Agent-shell Markdown faces intentionally left without a voice.
+Zebra striping is purely visual and should not alter table data speech.")
+
 (voice-setup-add-map emacspeak-agent-shell--ui-face-voice-map)
+(voice-setup-add-map emacspeak-agent-shell--markdown-face-voice-map)
 
 ;;;  Helper Functions
+
+(defun emacspeak-agent-shell--speech-copy-without-yank-handler (text)
+  "Return TEXT prepared for speech without invoking its clipboard handler.
+Agent-shell Markdown uses `yank-handler' to make pasted content plain.  Speech
+must bypass that handler so `dtk-speak' retains faces and other aural display
+properties while copying TEXT into its private scratch buffer."
+  (if (and (stringp text)
+           (> (length text) 0)
+           (text-property-not-all 0 (length text) 'yank-handler nil text))
+      (let ((copy (copy-sequence text)))
+        (remove-text-properties 0 (length copy) '(yank-handler nil) copy)
+        copy)
+    text))
+
+(defun emacspeak-agent-shell--prepare-speech-text (text)
+  "Prepare TEXT for speech in agent-shell, leaving other modes unchanged."
+  (if (and (stringp text)
+           (derived-mode-p 'agent-shell-mode
+                           'agent-shell-viewport-view-mode
+                           'agent-shell-viewport-edit-mode))
+      (emacspeak-agent-shell--speech-copy-without-yank-handler text)
+    text))
 
 (defvar emacspeak-agent-shell--pending-speech-timer nil
   "Timer for delayed speech after streaming completes.")
@@ -1090,6 +1137,14 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
          (dtk-speak trimmed-content))))))
 
 ;;;  Advice Agent-Shell Functions
+
+(defadvice dtk-speak (around emacspeak pre act comp)
+  "Preserve rendered Markdown properties while speaking agent-shell content.
+This changes only the temporary speech string; agent-shell's clipboard handler
+and the source buffer remain untouched."
+  (ad-set-arg
+   0 (emacspeak-agent-shell--prepare-speech-text (ad-get-arg 0)))
+  ad-do-it)
 
 (defadvice emacspeak-speak-mode-line (around emacspeak pre act comp)
   "Read the full semantic header when invoked interactively in agent-shell.
@@ -2755,7 +2810,8 @@ the corresponding buffer boundary."
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
-  '((emacspeak-speak-mode-line around)
+  '((dtk-speak around)
+    (emacspeak-speak-mode-line around)
     (emacspeak-speak-header-line around)
     (agent-shell after)
     (agent-shell-start after)
