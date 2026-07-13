@@ -476,24 +476,88 @@ and speak them after streaming pauses for a brief period."
 
 ;;;  Navigation Commands
 
+(defun emacspeak-agent-shell--permission-button-text-at-point ()
+  "Return the visible permission button text at point, without decoration."
+  (when (get-text-property (point) 'agent-shell-permission-button)
+    (let ((start (point))
+          (end (point)))
+      (while (and (> start (point-min))
+                  (eq (get-text-property (1- start) 'button) 'permission))
+        (setq start (1- start)))
+      (while (and (< end (point-max))
+                  (eq (get-text-property end 'button) 'permission))
+        (setq end (1+ end)))
+      (let ((text (string-trim
+                   (buffer-substring-no-properties start end))))
+        (when (and (string-prefix-p "[" text)
+                   (string-suffix-p "]" text))
+          (setq text (string-trim (substring text 1 -1))))
+        text))))
+
+(defun emacspeak-agent-shell--permission-button-positions-on-line ()
+  "Return permission button marker positions on the current line."
+  (let ((position (line-beginning-position))
+        (end (line-end-position))
+        positions)
+    (while (and (< position end)
+                (setq position
+                      (text-property-any
+                       position end 'agent-shell-permission-button t)))
+      (push position positions)
+      (setq position
+            (or (next-single-property-change
+                 position 'agent-shell-permission-button nil end)
+                end)))
+    (nreverse positions)))
+
+(defun emacspeak-agent-shell--permission-button-feedback ()
+  "Speak the focused permission choice, position, and activation key."
+  (when-let* ((text (emacspeak-agent-shell--permission-button-text-at-point))
+              (positions
+               (emacspeak-agent-shell--permission-button-positions-on-line))
+              (offset (cl-position (point) positions :test #'=)))
+    (let ((label text)
+          key)
+      (when (string-match "\\`\\(.*\\) (\\([^()]+\\))\\'" text)
+        (setq label (string-trim (match-string 1 text))
+              key (match-string 2 text)))
+      (emacspeak-icon 'item)
+      (dtk-speak
+       (format "%s, choice %d of %d. Press Return%s."
+               label
+               (1+ offset)
+               (length positions)
+               (if key (format " or %s" key) "")))
+      t)))
+
 (defadvice agent-shell-next-item (after emacspeak pre act comp)
   "Speak the item at point after navigation."
   (when (ems-interactive-p)
-    (emacspeak-icon 'item)
-    (emacspeak-speak-line)))
+    (unless (emacspeak-agent-shell--permission-button-feedback)
+      (emacspeak-icon 'item)
+      (emacspeak-speak-line))))
 
 (defadvice agent-shell-previous-item (after emacspeak pre act comp)
   "Speak the item at point after navigation."
   (when (ems-interactive-p)
-    (emacspeak-icon 'item)
-    (emacspeak-speak-line)))
+    (unless (emacspeak-agent-shell--permission-button-feedback)
+      (emacspeak-icon 'item)
+      (emacspeak-speak-line))))
 
 (defadvice agent-shell-jump-to-latest-permission-button-row (after emacspeak pre act comp)
   "Announce jump to permission."
-  (when (ems-interactive-p)
-    (emacspeak-icon 'large-movement)
-    (message "Permission request")
-    (emacspeak-speak-line)))
+  (when (and (ems-interactive-p) ad-return-value)
+    (emacspeak-agent-shell--permission-button-feedback)))
+
+(defadvice agent-shell-next-permission-button (after emacspeak pre act comp)
+  "Speak the next permission choice after moving to it."
+  (when (and (ems-interactive-p) ad-return-value)
+    (emacspeak-agent-shell--permission-button-feedback)))
+
+(defadvice agent-shell-previous-permission-button (after emacspeak pre act comp)
+  "Speak the previous permission choice after moving to it."
+  (when (and (ems-interactive-p) ad-return-value)
+    (emacspeak-agent-shell--permission-button-feedback)))
 
 ;;;  Session Management
 
@@ -615,6 +679,8 @@ do not stack earcons."
     (agent-shell-next-item after)
     (agent-shell-previous-item after)
     (agent-shell-jump-to-latest-permission-button-row after)
+    (agent-shell-next-permission-button after)
+    (agent-shell-previous-permission-button after)
     (agent-shell-set-session-model after)
     (agent-shell-set-session-mode after)
     (agent-shell-cycle-session-mode after)

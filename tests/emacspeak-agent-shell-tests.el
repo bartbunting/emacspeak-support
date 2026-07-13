@@ -23,6 +23,8 @@
                   "emacspeak-agent-shell" (buffer qualified-ids))
 (declare-function emacspeak-agent-shell--handle-permission-request
                   "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--permission-button-feedback
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-event-cleanup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-event-setup
@@ -33,6 +35,9 @@
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
                   "emacspeak-agent-shell" ())
+
+(declare-function agent-shell--make-permission-button
+                  "agent-shell" (&rest arguments))
 
 (defconst emacspeak-agent-shell-test--agent-shell-directory
   (file-name-as-directory
@@ -159,6 +164,23 @@ ENTRIES is an alist of qualified block IDs to body strings."
                                    choices)
                            " ")))))
           events)))
+
+(defun emacspeak-agent-shell-test--insert-permission-buttons ()
+  "Insert three navigatable permission buttons for focus tests."
+  (insert
+   (mapconcat
+    #'identity
+    (list
+     (agent-shell--make-permission-button
+      :text "Allow (y)" :help "Allow (y)" :action #'ignore
+      :navigatable t :char "y" :option "Allow")
+     (agent-shell--make-permission-button
+      :text "Reject (n)" :help "Reject (n)" :action #'ignore
+      :navigatable t :char "n" :option "Reject")
+     (agent-shell--make-permission-button
+      :text "Always Allow (!)" :help "Always Allow (!)" :action #'ignore
+      :navigatable t :char "!" :option "Always Allow"))
+    " ")))
 
 (defun emacspeak-agent-shell-test--saved-advice-state ()
   "Return active state for each configured agent-shell advice target."
@@ -335,6 +357,52 @@ ENTRIES is an alist of qualified block IDs to body strings."
       (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
       (should (= 0 (hash-table-count
                     emacspeak-agent-shell--pending-bodies))))))
+
+(ert-deftest emacspeak-agent-shell-permission-button-feedback-is-semantic ()
+  "Focused permission feedback should include choice position and key."
+  (with-temp-buffer
+    (emacspeak-agent-shell-test--insert-permission-buttons)
+    (goto-char (point-min))
+    (should (agent-shell-next-permission-button))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--permission-button-feedback))
+      '((icon item)
+        (speak "Allow, choice 1 of 3. Press Return or y."))))
+    (should (agent-shell-next-permission-button))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--permission-button-feedback))
+      '((icon item)
+        (speak "Reject, choice 2 of 3. Press Return or n."))))))
+
+(ert-deftest emacspeak-agent-shell-permission-button-advice-observes-boundary ()
+  "Interactive choice navigation should speak moves but not failed moves."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (emacspeak-agent-shell-test--insert-permission-buttons)
+    (goto-char (point-min))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'agent-shell-next-permission-button))
+      '((icon item)
+        (speak "Allow, choice 1 of 3. Press Return or y."))))
+    (ignore
+     (emacspeak-agent-shell-test--capture-events
+       (call-interactively #'agent-shell-next-permission-button)
+       (call-interactively #'agent-shell-next-permission-button)))
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (call-interactively #'agent-shell-next-permission-button)))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'agent-shell-previous-permission-button))
+      '((icon item)
+        (speak "Reject, choice 2 of 3. Press Return or n."))))))
 
 (ert-deftest emacspeak-agent-shell-unknown-block-uses-fallback ()
   "Unknown non-empty content should reach the fallback speaker."
