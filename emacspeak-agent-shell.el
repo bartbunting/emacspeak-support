@@ -62,6 +62,8 @@
 (require 'agent-shell)
 (require 'shell-maker)
 
+(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
+
 ;;;  Customization
 
 (defgroup emacspeak-agent-shell nil
@@ -471,7 +473,11 @@ selects the configured foreground or background level."
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-q")
               #'emacspeak-agent-shell-select-speech-level)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-S-q")
-              #'emacspeak-agent-shell-select-background-speech-level))
+              #'emacspeak-agent-shell-select-background-speech-level)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c ]")
+              #'emacspeak-agent-shell-next-block-of-type)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c [")
+              #'emacspeak-agent-shell-previous-block-of-type))
 
 (emacspeak-agent-shell--install-speech-control-bindings)
 
@@ -934,6 +940,347 @@ and speak them after streaming pauses for a brief period."
   ad-return-value)
 
 ;;;  Navigation Commands
+
+(defconst emacspeak-agent-shell--block-type-choices
+  '(("Agent response" . agent-response)
+    ("User prompt" . user-prompt)
+    ("Thought or reasoning" . thought)
+    ("Tool call" . tool-call)
+    ("Tool group" . tool-group)
+    ("Plan" . plan)
+    ("Permission" . permission)
+    ("Error" . error)
+    ("Other" . other))
+  "Completion candidates for semantic agent-shell block navigation.")
+
+(defvar emacspeak-agent-shell--block-navigation-type 'agent-response
+  "Most recently selected semantic agent-shell block type.")
+
+(defun emacspeak-agent-shell--block-type-label (type)
+  "Return the display label for semantic block TYPE."
+  (or (car (rassq type emacspeak-agent-shell--block-type-choices))
+      "Other"))
+
+(defun emacspeak-agent-shell--read-block-type ()
+  "Read and remember a semantic agent-shell block type."
+  (let* ((default
+          (emacspeak-agent-shell--block-type-label
+           emacspeak-agent-shell--block-navigation-type))
+         (selection
+          (completing-read
+           (format-prompt "Block type" default)
+           (mapcar #'car emacspeak-agent-shell--block-type-choices)
+           nil t nil nil default)))
+    (setq emacspeak-agent-shell--block-navigation-type
+          (alist-get selection emacspeak-agent-shell--block-type-choices
+                    nil nil #'string=))))
+
+(defun emacspeak-agent-shell--semantic-block-type (qualified-id state)
+  "Classify QUALIFIED-ID and fragment STATE for navigation.
+Agent-shell currently exposes fragment identity but no public semantic type;
+keep that compatibility inference isolated here."
+  (cond
+   ((and (stringp qualified-id)
+         (string-match-p "agent_message_chunk\\'" qualified-id))
+    'agent-response)
+   ((and (stringp qualified-id)
+         (string-match-p "user_message_chunk\\'" qualified-id))
+    'user-prompt)
+   ((and (stringp qualified-id)
+         (string-match-p "agent_thought_chunk\\'" qualified-id))
+    'thought)
+   ((and (stringp qualified-id)
+         (string-match-p "permission-" qualified-id))
+    'permission)
+   ((eq (map-elt state :kind) 'group) 'tool-group)
+   ((map-elt state :group-id) 'tool-call)
+   ((and (stringp qualified-id)
+         (string-match-p "-plan\\'" qualified-id))
+    'plan)
+   ((and (stringp qualified-id)
+         (string-match-p
+          "\\(?:failed-\\|Error\\|out-of-turn-acp-bug\\|[Uu]nhandled\\)"
+          qualified-id))
+    'error)
+   (t 'other)))
+
+(defun emacspeak-agent-shell--concise-block-text (text)
+  "Return a concise single-line version of block TEXT."
+  (when text
+    (let ((plain
+           (string-trim
+            (replace-regexp-in-string
+             "[[:space:]]+" " " (substring-no-properties text)))))
+      (unless (string-empty-p plain)
+        (if (> (length plain) 80)
+            (concat (substring plain 0 77) "...")
+          plain)))))
+
+(defun emacspeak-agent-shell--block-section-text (start end section)
+  "Return text for fragment SECTION between START and END."
+  (let ((position start)
+        result)
+    (while (and (< position end) (not result))
+      (let ((next
+             (or (next-single-property-change
+                  position 'agent-shell-ui-section nil end)
+                 end)))
+        (when (eq (get-text-property position 'agent-shell-ui-section)
+                  section)
+          (setq result
+                (buffer-substring-no-properties position next)))
+        (setq position next)))
+    (emacspeak-agent-shell--concise-block-text result)))
+
+(defun emacspeak-agent-shell--fragment-location (start end state)
+  "Return a semantic location for fragment STATE from START to END."
+  (let* ((qualified-id (map-elt state :qualified-id))
+         (type
+          (emacspeak-agent-shell--semantic-block-type qualified-id state))
+         (left
+          (emacspeak-agent-shell--block-section-text
+           start end 'label-left))
+         (right
+          (emacspeak-agent-shell--block-section-text
+           start end 'label-right))
+         (indicator
+          (text-property-any
+           start end 'agent-shell-ui-section 'indicator))
+         (label
+          (emacspeak-agent-shell--concise-block-text
+           (string-join (delq nil (list left right)) " "))))
+    (unless label
+      (setq label
+            (cond
+             ((eq type 'user-prompt)
+              (emacspeak-agent-shell--concise-block-text
+               (buffer-substring-no-properties start end)))
+             ((memq type '(permission error other))
+              (emacspeak-agent-shell--block-section-text
+               start end 'body)))))
+    (list :position start
+          :end end
+          :type type
+          :state state
+          :label label
+          :fold-state
+          (when indicator
+            (if (map-elt state :collapsed) "collapsed" "expanded")))))
+
+(defun emacspeak-agent-shell--fragment-locations ()
+  "Return semantic locations for all agent-shell UI fragments."
+  (let ((position (point-min))
+        locations)
+    (while (< position (point-max))
+      (let* ((state (get-text-property position 'agent-shell-ui-state))
+             (next
+              (or (next-single-property-change
+                   position 'agent-shell-ui-state nil (point-max))
+                  (point-max))))
+        (when (and state (< position next))
+          (push (emacspeak-agent-shell--fragment-location
+                 position next state)
+                locations))
+        (setq position next)))
+    (nreverse locations)))
+
+(defun emacspeak-agent-shell--face-includes-p (value face)
+  "Return non-nil when face specification VALUE includes FACE."
+  (or (eq value face)
+      (and (listp value) (memq face value))))
+
+(defun emacspeak-agent-shell--prompt-locations ()
+  "Return semantic user-prompt locations in the current buffer."
+  (let (locations)
+    (dolist (property '(agent-shell-viewport-prompt font-lock-face face))
+      (let ((position (point-min)))
+        (while (< position (point-max))
+          (let* ((value (get-text-property position property))
+                 (next
+                  (or (next-single-property-change
+                       position property nil (point-max))
+                      (point-max)))
+                 (prompt-p
+                  (if (eq property 'agent-shell-viewport-prompt)
+                      value
+                    (emacspeak-agent-shell--face-includes-p
+                     value 'agent-shell-prompt))))
+            (when prompt-p
+              (push
+               (list :position position
+                     :end next
+                     :type 'user-prompt
+                     :label
+                     (emacspeak-agent-shell--concise-block-text
+                      (save-excursion
+                        (goto-char position)
+                        (buffer-substring-no-properties
+                         position (line-end-position)))))
+               locations))
+            (setq position next)))))
+    (nreverse locations)))
+
+(defun emacspeak-agent-shell--deduplicate-block-locations (locations)
+  "Return LOCATIONS without duplicate type/position pairs."
+  (let (seen result)
+    (dolist (location locations)
+      (let ((key (cons (plist-get location :type)
+                       (plist-get location :position))))
+        (unless (member key seen)
+          (push key seen)
+          (push location result))))
+    (nreverse result)))
+
+(defun emacspeak-agent-shell--block-locations ()
+  "Return all semantic transcript block locations in buffer order."
+  (let* ((fragments (emacspeak-agent-shell--fragment-locations))
+         (prompts (emacspeak-agent-shell--prompt-locations))
+         (locations (append fragments prompts)))
+    ;; A restored viewport normally retains response fragment state.  Keep a
+    ;; whole-response fallback for older or plain viewport content.
+    (when (and (derived-mode-p 'agent-shell-viewport-view-mode)
+               (not (seq-find
+                     (lambda (item)
+                       (eq (plist-get item :type) 'agent-response))
+                     fragments)))
+      (when-let* ((prompt (car (last prompts)))
+                  (start (plist-get prompt :end))
+                  (response
+                   (save-excursion
+                     (goto-char start)
+                     (skip-chars-forward " \\t\\n\\r")
+                     (and (< (point) (point-max)) (point)))))
+        (push (list :position response
+                    :end (point-max)
+                    :type 'agent-response)
+              locations)))
+    (sort (emacspeak-agent-shell--deduplicate-block-locations locations)
+          (lambda (left right)
+            (< (plist-get left :position)
+               (plist-get right :position))))))
+
+(defun emacspeak-agent-shell--expand-block-parent (location)
+  "Expand LOCATION's collapsed parent group when necessary."
+  (when-let* ((state (plist-get location :state))
+              (group-id (map-elt state :group-id))
+              ((invisible-p (plist-get location :position)))
+              (parent
+               (seq-find
+                (lambda (candidate)
+                  (equal
+                   (map-elt (plist-get candidate :state) :qualified-id)
+                   group-id))
+                (emacspeak-agent-shell--fragment-locations)))
+              (parent-state (plist-get parent :state))
+              ((map-elt parent-state :collapsed)))
+    (goto-char (plist-get parent :position))
+    (agent-shell-ui-toggle-fragment)))
+
+(defun emacspeak-agent-shell--block-location-announcement
+    (location index count)
+  "Format LOCATION at INDEX among COUNT matching semantic blocks."
+  (let* ((type-label
+          (emacspeak-agent-shell--block-type-label
+           (plist-get location :type)))
+         (label (plist-get location :label))
+         (label
+          (unless (and label (string-equal-ignore-case label type-label))
+            label)))
+    (concat
+     (string-join
+      (delq
+       nil
+       (list
+        (format "%s %d of %d" type-label index count)
+        label
+        (plist-get location :fold-state)))
+      ", ")
+     ".")))
+
+(defun emacspeak-agent-shell--jump-block-of-type (type direction)
+  "Move to semantic block TYPE in DIRECTION and announce it."
+  (unless (derived-mode-p 'agent-shell-mode
+                          'agent-shell-viewport-view-mode)
+    (user-error "Not in an agent-shell transcript"))
+  (let* ((locations
+          (seq-filter
+           (lambda (location) (eq (plist-get location :type) type))
+           (emacspeak-agent-shell--block-locations)))
+         (origin (point))
+         (target
+          (if (eq direction 'forward)
+              (seq-find
+               (lambda (location)
+                 (> (plist-get location :position) origin))
+               locations)
+            (car
+             (last
+              (seq-take-while
+               (lambda (location)
+                 (< (plist-get location :position) origin))
+               locations))))))
+    (if target
+        (progn
+          (emacspeak-agent-shell--expand-block-parent target)
+          (goto-char (plist-get target :position))
+          (dtk-stop)
+          (emacspeak-icon 'large-movement)
+          (dtk-speak
+           (emacspeak-agent-shell--block-location-announcement
+            target (1+ (seq-position locations target))
+            (length locations)))
+          target)
+      (emacspeak-icon 'warn-user)
+      (dtk-speak
+       (format "No %s %s block."
+               (if (eq direction 'forward) "later" "earlier")
+               (downcase (emacspeak-agent-shell--block-type-label type))))
+      nil)))
+
+(defvar emacspeak-agent-shell--block-repeat-map
+  (make-sparse-keymap)
+  "Temporary map for repeating semantic block navigation.")
+
+(defun emacspeak-agent-shell--install-block-repeat-bindings ()
+  "Install reload-safe semantic block repeat keys."
+  (define-key emacspeak-agent-shell--block-repeat-map (kbd "]")
+              #'emacspeak-agent-shell-repeat-next-block)
+  (define-key emacspeak-agent-shell--block-repeat-map (kbd "[")
+              #'emacspeak-agent-shell-repeat-previous-block))
+
+(emacspeak-agent-shell--install-block-repeat-bindings)
+
+(defun emacspeak-agent-shell--activate-block-repeat-map ()
+  "Activate temporary bracket bindings for semantic block repetition."
+  (set-transient-map emacspeak-agent-shell--block-repeat-map t))
+
+(defun emacspeak-agent-shell-next-block-of-type ()
+  "Select a semantic block type and move to its next occurrence."
+  (interactive)
+  (when (emacspeak-agent-shell--jump-block-of-type
+         (emacspeak-agent-shell--read-block-type) 'forward)
+    (emacspeak-agent-shell--activate-block-repeat-map)))
+
+(defun emacspeak-agent-shell-previous-block-of-type ()
+  "Select a semantic block type and move to its previous occurrence."
+  (interactive)
+  (when (emacspeak-agent-shell--jump-block-of-type
+         (emacspeak-agent-shell--read-block-type) 'backward)
+    (emacspeak-agent-shell--activate-block-repeat-map)))
+
+(defun emacspeak-agent-shell-repeat-next-block ()
+  "Move to the next occurrence of the selected semantic block type."
+  (interactive)
+  (when (emacspeak-agent-shell--jump-block-of-type
+         emacspeak-agent-shell--block-navigation-type 'forward)
+    (emacspeak-agent-shell--activate-block-repeat-map)))
+
+(defun emacspeak-agent-shell-repeat-previous-block ()
+  "Move to the previous occurrence of the selected semantic block type."
+  (interactive)
+  (when (emacspeak-agent-shell--jump-block-of-type
+         emacspeak-agent-shell--block-navigation-type 'backward)
+    (emacspeak-agent-shell--activate-block-repeat-map)))
 
 (defun emacspeak-agent-shell--markdown-table-separator-p (row)
   "Return non-nil if Markdown table ROW is a separator row."

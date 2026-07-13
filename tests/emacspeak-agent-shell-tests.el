@@ -26,6 +26,8 @@
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
 (defvar emacspeak-agent-shell-background-speech-level)
+(defvar emacspeak-agent-shell--block-navigation-type)
+(defvar emacspeak-agent-shell--block-repeat-map)
 (defvar emacspeak-agent-shell-foreground-speech-level)
 (defvar emacspeak-agent-shell--table-navigation-active)
 (defvar emacspeak-agent-shell--table-navigation-map)
@@ -52,6 +54,10 @@
                   "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell--buffer-cleanup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--block-locations
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--jump-block-of-type
+                  "emacspeak-agent-shell" (type direction))
 (declare-function emacspeak-agent-shell--buffer-setup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--handle-permission-request
@@ -77,6 +83,10 @@
 (declare-function emacspeak-agent-shell--session-focused-p
                   "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell--install-speech-control-bindings
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-next-block-of-type
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-previous-block-of-type
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-cycle-speech-level
                   "emacspeak-agent-shell" (&optional reset))
@@ -145,6 +155,10 @@
                   "agent-shell" (state tool-call-id tool-call))
 (declare-function agent-shell-markdown-replace-markup
                   "agent-shell-markdown" (&rest arguments))
+(declare-function agent-shell-ui-make-fragment-model
+                  "agent-shell-ui" (&rest arguments))
+(declare-function agent-shell-ui-update-fragment
+                  "agent-shell-ui" (model &rest arguments))
 
 (defconst emacspeak-agent-shell-test--agent-shell-directory
   (file-name-as-directory
@@ -221,6 +235,54 @@ ENTRIES is an alist of qualified block IDs to body strings."
   `(with-temp-buffer
      (insert ,source)
      (agent-shell-markdown-replace-markup)
+     ,@body))
+
+(defmacro emacspeak-agent-shell-test--with-semantic-blocks (&rest body)
+  "Create representative agent-shell transcript blocks, then run BODY."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (insert "Transcript start\n")
+     (insert
+      (propertize "Codex> first request\n"
+                  'font-lock-face 'agent-shell-prompt))
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "1-agent_message_chunk"
+       :body "First answer")
+      :navigation 'never :expanded t)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "2-agent_thought_chunk"
+       :label-left "Thinking" :body "Reasoning")
+      :expanded nil)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "tool-123"
+       :label-left "completed" :label-right "Read file"
+       :body "Tool output" :group-id "tool-calls-1"
+       :group-label "Tool calls" :group-expanded nil)
+      :expanded nil)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "plan"
+       :label-left "Plan" :body "One step")
+      :expanded t)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "permission-tool-456"
+       :body "Allow writing the file?")
+      :navigation 'never :expanded t)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "failed-request-id:2"
+       :body "Request failed")
+      :expanded t)
+     (agent-shell-ui-update-fragment
+      (agent-shell-ui-make-fragment-model
+       :namespace-id "1" :block-id "3-agent_message_chunk"
+       :body "Second answer")
+      :navigation 'never :expanded t)
+     (setq major-mode 'agent-shell-mode)
      ,@body))
 
 (defun emacspeak-agent-shell-test--table-entry (command mode direction)
@@ -806,26 +868,40 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (kill-buffer buffer)))))
 
 (ert-deftest emacspeak-agent-shell-speech-bindings-upgrade-live-map ()
-  "Reloading support should replace cycling and install the shifted selector."
+  "Reloading support should install current speech and navigation controls."
   (let* ((map emacspeak-agent-shell--speech-control-map)
          (current-key (kbd "C-c C-q"))
          (background-key (kbd "C-c C-S-q"))
+         (next-block-key (kbd "C-c ]"))
+         (previous-block-key (kbd "C-c ["))
          (saved-current (lookup-key map current-key))
-         (saved-background (lookup-key map background-key)))
+         (saved-background (lookup-key map background-key))
+         (saved-next-block (lookup-key map next-block-key))
+         (saved-previous-block (lookup-key map previous-block-key)))
     (unwind-protect
         (progn
           (define-key map current-key
                       #'emacspeak-agent-shell-cycle-speech-level)
           (define-key map background-key nil)
+          (define-key map next-block-key nil)
+          (define-key map previous-block-key nil)
           (emacspeak-agent-shell--install-speech-control-bindings)
           (should
            (eq (lookup-key map current-key)
                #'emacspeak-agent-shell-select-speech-level))
           (should
            (eq (lookup-key map background-key)
-               #'emacspeak-agent-shell-select-background-speech-level)))
+               #'emacspeak-agent-shell-select-background-speech-level))
+          (should
+           (eq (lookup-key map next-block-key)
+               #'emacspeak-agent-shell-next-block-of-type))
+          (should
+           (eq (lookup-key map previous-block-key)
+               #'emacspeak-agent-shell-previous-block-of-type)))
       (define-key map current-key saved-current)
-      (define-key map background-key saved-background))))
+      (define-key map background-key saved-background)
+      (define-key map next-block-key saved-next-block)
+      (define-key map previous-block-key saved-previous-block))))
 
 (ert-deftest emacspeak-agent-shell-speech-level-control-works-in-viewport ()
   "Viewport selectors should target the shell and remain active in tables."
@@ -847,6 +923,12 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should
              (eq (key-binding (kbd "C-c C-S-q"))
                  #'emacspeak-agent-shell-select-background-speech-level))
+            (should
+             (eq (key-binding (kbd "C-c ]"))
+                 #'emacspeak-agent-shell-next-block-of-type))
+            (should
+             (eq (key-binding (kbd "C-c ["))
+                 #'emacspeak-agent-shell-previous-block-of-type))
             (setq emacspeak-agent-shell--table-navigation-active t)
             (should
              (eq (key-binding (kbd "C-c C-q"))
@@ -1372,6 +1454,125 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (call-interactively #'agent-shell-previous-permission-button))
       '((icon item)
         (speak "Reject, choice 2 of 3. Press Return or n."))))))
+
+(ert-deftest emacspeak-agent-shell-block-locations-are-semantic ()
+  "Transcript locations should expose semantic types in buffer order."
+  (emacspeak-agent-shell-test--with-semantic-blocks
+    (should
+     (equal
+      (mapcar
+       (lambda (location) (plist-get location :type))
+       (emacspeak-agent-shell--block-locations))
+      '(user-prompt agent-response thought tool-group tool-call plan
+                    permission error agent-response)))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-expands-tool-group ()
+  "Selecting a hidden tool should expand its group and announce its state."
+  (emacspeak-agent-shell-test--with-semantic-blocks
+    (let* ((locations (emacspeak-agent-shell--block-locations))
+           (tool
+            (seq-find
+             (lambda (location)
+               (eq (plist-get location :type) 'tool-call))
+             locations)))
+      (should (invisible-p (plist-get tool :position)))
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'tool-call 'forward))
+        '((stop nil)
+          (icon large-movement)
+          (speak "Tool call 1 of 1, completed Read file, collapsed."))))
+      (should (= (point) (plist-get tool :position)))
+      (should-not (invisible-p (point))))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-does-not-wrap ()
+  "Typed navigation should count matches and stop at transcript boundaries."
+  (emacspeak-agent-shell-test--with-semantic-blocks
+    (goto-char (point-min))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--jump-block-of-type
+         'agent-response 'forward)
+        (emacspeak-agent-shell--jump-block-of-type
+         'agent-response 'forward))
+      '((stop nil)
+        (icon large-movement)
+        (speak "Agent response 1 of 2.")
+        (stop nil)
+        (icon large-movement)
+        (speak "Agent response 2 of 2."))))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--jump-block-of-type
+         'agent-response 'forward))
+      '((icon warn-user)
+        (speak "No later agent response block."))))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--jump-block-of-type
+         'agent-response 'backward))
+      '((stop nil)
+        (icon large-movement)
+        (speak "Agent response 1 of 2."))))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-selects-and-repeats ()
+  "Interactive navigation should remember completion and enable repeat keys."
+  (let ((emacspeak-agent-shell--block-navigation-type 'agent-response)
+        activated-map)
+    (emacspeak-agent-shell-test--with-semantic-blocks
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "Plan"))
+                    ((symbol-function 'set-transient-map)
+                     (lambda (map &rest _)
+                       (setq activated-map map))))
+            (call-interactively
+             #'emacspeak-agent-shell-next-block-of-type)))
+        '((stop nil)
+          (icon large-movement)
+          (speak "Plan 1 of 1, expanded."))))
+      (should (eq emacspeak-agent-shell--block-navigation-type 'plan))
+      (should (eq activated-map emacspeak-agent-shell--block-repeat-map))
+      (should
+       (eq (lookup-key activated-map (kbd "]"))
+           #'emacspeak-agent-shell-repeat-next-block))
+      (should
+       (eq (lookup-key activated-map (kbd "["))
+           #'emacspeak-agent-shell-repeat-previous-block)))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-has-viewport-fallback ()
+  "Plain viewport responses should remain typed navigation targets."
+  (with-temp-buffer
+    (insert
+     (propertize "Question\n\n" 'agent-shell-viewport-prompt t))
+    (let ((response-position (point)))
+      (insert "Plain answer")
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (goto-char (point-min))
+      (should
+       (equal
+        (mapcar
+         (lambda (location) (plist-get location :type))
+         (emacspeak-agent-shell--block-locations))
+        '(user-prompt agent-response)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'agent-response 'forward))
+        '((stop nil)
+          (icon large-movement)
+          (speak "Agent response 1 of 1."))))
+      (should (= (point) response-position)))))
 
 (ert-deftest emacspeak-agent-shell-table-cell-feedback-is-customizable ()
   "Table feedback should support every title set and both orderings."
