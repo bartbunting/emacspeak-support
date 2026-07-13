@@ -215,6 +215,12 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 (defvar-local emacspeak-agent-shell--lifecycle-subscription nil
   "Subscription token for lifecycle events in this shell.")
 
+(defvar-local emacspeak-agent-shell--tool-call-subscription nil
+  "Subscription token for tool call update events in this shell.")
+
+(defvar-local emacspeak-agent-shell--tool-call-status-cache nil
+  "Hash table mapping tool call IDs to their last announced status.")
+
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
 When agent output streams in chunks, wait this long after the last
@@ -429,6 +435,9 @@ Leave unrelated pending agent content and its timer intact."
 
 (defun emacspeak-agent-shell--handle-lifecycle-event (event)
   "Provide semantic processing feedback for public agent-shell EVENT."
+  (when (and (memq (map-elt event :event) '(turn-complete error))
+             (hash-table-p emacspeak-agent-shell--tool-call-status-cache))
+    (clrhash emacspeak-agent-shell--tool-call-status-cache))
   (when emacspeak-agent-shell-signal-processing
     (pcase (map-elt event :event)
       ((or 'init-started 'input-submitted)
@@ -462,6 +471,13 @@ Leave unrelated pending agent content and its timer intact."
                #'emacspeak-agent-shell--lifecycle-event-cleanup t)
   (remove-hook 'change-major-mode-hook
                #'emacspeak-agent-shell--lifecycle-event-cleanup t))
+
+(defun emacspeak-agent-shell--tool-call-block-handled-p (block-id)
+  "Return non-nil when tool BLOCK-ID has public event feedback."
+  (when (and (stringp block-id)
+             (hash-table-p emacspeak-agent-shell--tool-call-status-cache))
+    (member (gethash block-id emacspeak-agent-shell--tool-call-status-cache)
+            '("pending" "in_progress" "completed" "failed"))))
 
 (defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
   "Execute delayed speech of blocks identified by QUALIFIED-IDS in BUFFER.
@@ -606,6 +622,8 @@ and speak them after streaming pauses for a brief period."
     ad-do-it
     ;; Handle speech with delayed approach
     (when (and buffer (buffer-live-p buffer) body
+               (not (emacspeak-agent-shell--tool-call-block-handled-p
+                     block-id))
                (emacspeak-agent-shell--should-speak-p buffer))
       (with-current-buffer buffer
         ;; Cancel any existing timer
@@ -792,20 +810,141 @@ and speak them after streaming pauses for a brief period."
   (pcase status
     ("completed" 'task-done)
     ("failed" 'warn-user)
-    ("running" 'progress)
+    ("in_progress" 'progress)
     ("pending" 'item)
     (_ 'item)))
 
-(defadvice agent-shell--save-tool-call (after emacspeak pre act comp)
-  "Provide feedback when tool call status changes."
-  (when (ems-interactive-p)
-    (let* ((tool-call (ad-get-arg 2))
-           (status (map-elt tool-call :status))
-           (title (map-elt tool-call :title)))
-      (when (and status (member status '("completed" "failed")))
-        (emacspeak-icon (emacspeak-agent-shell--tool-call-status-icon status))
-        (when title
-          (message "Tool: %s - %s" title status))))))
+(defun emacspeak-agent-shell--meaningful-tool-text (text)
+  "Return a concise speech version of meaningful tool TEXT, or nil."
+  (when (and (stringp text) (string-match-p "[[:alnum:]]" text))
+    (let ((clean
+           (replace-regexp-in-string
+            "[[:space:]\n\r]+" " "
+            (string-trim (substring-no-properties text)))))
+      (if (> (length clean) 120)
+          (concat (substring clean 0 117) "...")
+        clean))))
+
+(defun emacspeak-agent-shell--tool-call-description (tool-call tool-call-id)
+  "Return a concise description of TOOL-CALL identified by TOOL-CALL-ID."
+  (or (emacspeak-agent-shell--meaningful-tool-text
+       (map-elt tool-call :title))
+      (emacspeak-agent-shell--meaningful-tool-text
+       (map-elt tool-call :description))
+      (emacspeak-agent-shell--meaningful-tool-text
+       (map-elt tool-call :command))
+      (emacspeak-agent-shell--meaningful-tool-text
+       (map-elt tool-call :kind))
+      (emacspeak-agent-shell--meaningful-tool-text tool-call-id)
+      "unknown tool"))
+
+(defun emacspeak-agent-shell--tool-call-announcement (status description)
+  "Return a semantic announcement for tool STATUS and DESCRIPTION."
+  (let ((verb (pcase status
+                ("pending" "pending")
+                ("in_progress" "started")
+                ("completed" "completed")
+                ("failed" "failed"))))
+    (concat (format "Tool %s: %s" verb description)
+            (unless (string-match-p "[.!?]$" description) "."))))
+
+(defun emacspeak-agent-shell--tool-content-block-text (block)
+  "Extract speakable text from ACP tool content BLOCK."
+  (cond
+   ((stringp block) (substring-no-properties block))
+   ((listp block)
+    (let ((text (or (map-elt block :text) (map-elt block 'text)))
+          (content (or (map-elt block :content) (map-elt block 'content))))
+      (cond
+       ((stringp text) (substring-no-properties text))
+       ((stringp content) (substring-no-properties content))
+       ((listp content)
+        (emacspeak-agent-shell--tool-content-block-text content)))))
+   (t nil)))
+
+(defun emacspeak-agent-shell--tool-output-text (content)
+  "Extract speakable terminal output from ACP tool CONTENT."
+  (let* ((blocks
+          (cond
+           ((stringp content) (list content))
+           ((vectorp content) (append content nil))
+           ((and (listp content)
+                 (or (assq 'type content) (assq :type content)
+                     (assq 'text content) (assq :text content)))
+            (list content))
+           ((listp content) content)))
+         (texts
+          (seq-keep
+           (lambda (block)
+             (when-let* ((text
+                          (emacspeak-agent-shell--tool-content-block-text
+                           block))
+                         (trimmed (string-trim text))
+                         ((not (string-empty-p trimmed))))
+               trimmed))
+           blocks)))
+    (when texts (string-join texts "\n"))))
+
+(defun emacspeak-agent-shell--handle-tool-call-update (event)
+  "Announce a new semantic status from public tool update EVENT."
+  (let* ((data (map-elt event :data))
+         (tool-call-id (map-elt data :tool-call-id))
+         (tool-call (map-elt data :tool-call))
+         (status (map-elt tool-call :status)))
+    (when (and tool-call-id status)
+      (unless (hash-table-p emacspeak-agent-shell--tool-call-status-cache)
+        (setq emacspeak-agent-shell--tool-call-status-cache
+              (make-hash-table :test #'equal)))
+      (let ((previous
+             (gethash tool-call-id
+                      emacspeak-agent-shell--tool-call-status-cache)))
+        (puthash tool-call-id status
+                 emacspeak-agent-shell--tool-call-status-cache)
+        (when (and emacspeak-agent-shell-speak-tool-calls
+                   (member status
+                           '("pending" "in_progress" "completed" "failed"))
+                   (not (equal status previous)))
+          (emacspeak-icon
+           (emacspeak-agent-shell--tool-call-status-icon status))
+          (unless (eq emacspeak-agent-shell-tool-output-verbosity 'status)
+            (dtk-speak
+             (emacspeak-agent-shell--tool-call-announcement
+              status
+              (emacspeak-agent-shell--tool-call-description
+               tool-call tool-call-id)))
+            (when (and (eq emacspeak-agent-shell-tool-output-verbosity 'full)
+                       (member status '("completed" "failed")))
+              (when-let* ((output
+                           (emacspeak-agent-shell--tool-output-text
+                            (map-elt tool-call :content))))
+                (dtk-speak (format "Output: %s" output))))))))))
+
+(defun emacspeak-agent-shell--tool-call-event-setup ()
+  "Subscribe the current agent-shell buffer to tool call updates."
+  (unless emacspeak-agent-shell--tool-call-subscription
+    (setq emacspeak-agent-shell--tool-call-subscription
+          (agent-shell-subscribe-to
+           :shell-buffer (current-buffer)
+           :event 'tool-call-update
+           :on-event #'emacspeak-agent-shell--handle-tool-call-update)))
+  (add-hook 'kill-buffer-hook
+            #'emacspeak-agent-shell--tool-call-event-cleanup nil t)
+  (add-hook 'change-major-mode-hook
+            #'emacspeak-agent-shell--tool-call-event-cleanup nil t))
+
+(defun emacspeak-agent-shell--tool-call-event-cleanup ()
+  "Remove the current buffer's tool subscription and cached state."
+  (when emacspeak-agent-shell--tool-call-subscription
+    (agent-shell-unsubscribe
+     :subscription emacspeak-agent-shell--tool-call-subscription)
+    (setq emacspeak-agent-shell--tool-call-subscription nil))
+  (when (hash-table-p emacspeak-agent-shell--tool-call-status-cache)
+    (clrhash emacspeak-agent-shell--tool-call-status-cache))
+  (setq emacspeak-agent-shell--tool-call-status-cache nil)
+  (remove-hook 'kill-buffer-hook
+               #'emacspeak-agent-shell--tool-call-event-cleanup t)
+  (remove-hook 'change-major-mode-hook
+               #'emacspeak-agent-shell--tool-call-event-cleanup t))
 
 ;;;  Enable/Disable support:
 
@@ -830,8 +969,7 @@ and speak them after streaming pauses for a brief period."
     (agent-shell-viewport-refresh after)
     (agent-shell-viewport-submit after)
     (agent-shell-viewport-view-mode after)
-    (agent-shell-viewport-edit-mode after)
-    (agent-shell--save-tool-call after))
+    (agent-shell-viewport-edit-mode after))
   "List of advised functions for Emacspeak agent-shell support.")
 
 (defun emacspeak-agent-shell-enable ()
@@ -845,11 +983,14 @@ and speak them after streaming pauses for a brief period."
             #'emacspeak-agent-shell--permission-event-setup)
   (add-hook 'agent-shell-mode-hook
             #'emacspeak-agent-shell--lifecycle-event-setup)
+  (add-hook 'agent-shell-mode-hook
+            #'emacspeak-agent-shell--tool-call-event-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'agent-shell-mode)
         (emacspeak-agent-shell--permission-event-setup)
-        (emacspeak-agent-shell--lifecycle-event-setup))))
+        (emacspeak-agent-shell--lifecycle-event-setup)
+        (emacspeak-agent-shell--tool-call-event-setup))))
   (message "Enabled Emacspeak agent-shell support"))
 
 (defun emacspeak-agent-shell-disable ()
@@ -863,6 +1004,8 @@ and speak them after streaming pauses for a brief period."
                #'emacspeak-agent-shell--permission-event-setup)
   (remove-hook 'agent-shell-mode-hook
                #'emacspeak-agent-shell--lifecycle-event-setup)
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--tool-call-event-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'agent-shell-mode)
@@ -870,7 +1013,9 @@ and speak them after streaming pauses for a brief period."
                   emacspeak-agent-shell--permission-response-subscription)
           (emacspeak-agent-shell--permission-event-cleanup))
         (when emacspeak-agent-shell--lifecycle-subscription
-          (emacspeak-agent-shell--lifecycle-event-cleanup)))))
+          (emacspeak-agent-shell--lifecycle-event-cleanup))
+        (when emacspeak-agent-shell--tool-call-subscription
+          (emacspeak-agent-shell--tool-call-event-cleanup)))))
   (message "Disabled Emacspeak agent-shell support"))
 
 (provide 'emacspeak-agent-shell)

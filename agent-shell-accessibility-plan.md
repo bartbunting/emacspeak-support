@@ -30,12 +30,15 @@ Completed so far:
 - public permission request and response subscriptions, including simultaneous
   requests, semantic choices, focus feedback, and response confirmation; and
 - public initialization, input, turn-completion, and error feedback with
-  distinct normal, cancelled, limited, refused, and failed outcomes.
+  distinct normal, cancelled, limited, refused, and failed outcomes; and
+- public tool-call status feedback with per-tool transition deduplication and
+  icon-only, summary, and full-output verbosity.
 
 The lifecycle event path replaces heartbeat advice and suppresses delayed
-rendered duplicates without discarding pending agent response text.  Tool and
-idle events, background-session identity, and the remaining compatibility
-failures are still open Phase 0/1 work.
+rendered duplicates without discarding pending agent response text.  Tool
+events likewise replace asynchronous private save advice and avoid repeating
+rendered tool output.  Idle events, background-session identity, and the
+remaining compatibility failures are still open Phase 0/1 work.
 
 ## Findings
 

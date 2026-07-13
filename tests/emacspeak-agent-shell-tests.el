@@ -20,16 +20,22 @@
 (defvar emacspeak-agent-shell--permission-action-cache)
 (defvar emacspeak-agent-shell--permission-response-subscription)
 (defvar emacspeak-agent-shell--permission-subscription)
+(defvar emacspeak-agent-shell--tool-call-status-cache)
+(defvar emacspeak-agent-shell--tool-call-subscription)
 (defvar emacspeak-agent-shell-processing-end-icon)
 (defvar emacspeak-agent-shell-processing-start-icon)
 (defvar emacspeak-agent-shell-signal-processing)
 (defvar emacspeak-agent-shell-speak-permissions)
+(defvar emacspeak-agent-shell-speak-tool-calls)
+(defvar emacspeak-agent-shell-tool-output-verbosity)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
                   "emacspeak-agent-shell" (buffer qualified-ids))
 (declare-function emacspeak-agent-shell--handle-permission-request
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--handle-permission-response
+                  "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--handle-tool-call-update
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--handle-lifecycle-event
                   "emacspeak-agent-shell" (event))
@@ -45,6 +51,12 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--speak-content
                   "emacspeak-agent-shell" (content block-type))
+(declare-function emacspeak-agent-shell--tool-call-block-handled-p
+                  "emacspeak-agent-shell" (block-id))
+(declare-function emacspeak-agent-shell--tool-call-event-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--tool-call-event-setup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
@@ -52,6 +64,8 @@
 
 (declare-function agent-shell--make-permission-button
                   "agent-shell" (&rest arguments))
+(declare-function agent-shell--save-tool-call
+                  "agent-shell" (state tool-call-id tool-call))
 
 (defconst emacspeak-agent-shell-test--agent-shell-directory
   (file-name-as-directory
@@ -138,6 +152,66 @@ ENTRIES is an alist of qualified block IDs to body strings."
                   item '(:object params update sessionUpdate))
                  update-type)))
    (emacspeak-agent-shell-test--read-traffic filename)))
+
+(defun emacspeak-agent-shell-test--normalized-tool-call (raw-tool-call)
+  "Normalize RAW-TOOL-CALL into the public event representation."
+  (list (cons :title (map-elt raw-tool-call 'title))
+        (cons :status (map-elt raw-tool-call 'status))
+        (cons :kind (map-elt raw-tool-call 'kind))
+        (cons :description
+              (map-nested-elt raw-tool-call '(rawInput description)))
+        (cons :command (map-nested-elt raw-tool-call '(rawInput command)))
+        (cons :content (map-elt raw-tool-call 'content))))
+
+(defun emacspeak-agent-shell-test--tool-call-events (filename)
+  "Replay public tool-call events from upstream traffic FILENAME."
+  (let ((state '((:tool-calls . nil)))
+        events)
+    (dolist (item (emacspeak-agent-shell-test--read-traffic filename))
+      (let* ((object (map-elt item :object))
+             (method (map-elt object 'method))
+             (update (map-nested-elt object '(params update)))
+             (update-kind (map-elt update 'sessionUpdate))
+             (raw-tool-call
+              (cond
+               ((equal method "session/request_permission")
+                (map-nested-elt object '(params toolCall)))
+               ((and (equal method "session/update")
+                     (member update-kind
+                             '("tool_call" "tool_call_update")))
+                update)))
+             (tool-call-id (map-elt raw-tool-call 'toolCallId)))
+        (when tool-call-id
+          (agent-shell--save-tool-call
+           state tool-call-id
+           (emacspeak-agent-shell-test--normalized-tool-call raw-tool-call))
+          (when (member update-kind '("tool_call" "tool_call_update"))
+            (push
+             (list
+              (cons :event 'tool-call-update)
+              (cons :data
+                    (list
+                     (cons :tool-call-id tool-call-id)
+                     (cons :tool-call
+                           (copy-tree
+                            (map-nested-elt
+                             state (list :tool-calls tool-call-id)))))))
+             events)))))
+    (nreverse events)))
+
+(defun emacspeak-agent-shell-test--tool-call-event
+    (tool-call-id status title &optional content kind)
+  "Make a public tool event with TOOL-CALL-ID, STATUS, TITLE, CONTENT, and KIND."
+  (list
+   (cons :event 'tool-call-update)
+   (cons :data
+         (list
+          (cons :tool-call-id tool-call-id)
+          (cons :tool-call
+                (list (cons :status status)
+                      (cons :title title)
+                      (cons :content content)
+                      (cons :kind kind)))))))
 
 (defun emacspeak-agent-shell-test--permission-event (request)
   "Convert fixture permission REQUEST to a public agent-shell event."
@@ -278,6 +352,8 @@ ENTRIES is an alist of qualified block IDs to body strings."
                         agent-shell-mode-hook))
           (should (memq #'emacspeak-agent-shell--lifecycle-event-setup
                         agent-shell-mode-hook))
+          (should (memq #'emacspeak-agent-shell--tool-call-event-setup
+                        agent-shell-mode-hook))
           (dolist (entry emacspeak-agent-shell--advice-list)
             (when (fboundp (car entry))
               (should (ad-is-active (car entry)))))
@@ -287,6 +363,8 @@ ENTRIES is an alist of qualified block IDs to body strings."
           (should-not (memq #'emacspeak-agent-shell--permission-event-setup
                             agent-shell-mode-hook))
           (should-not (memq #'emacspeak-agent-shell--lifecycle-event-setup
+                            agent-shell-mode-hook))
+          (should-not (memq #'emacspeak-agent-shell--tool-call-event-setup
                             agent-shell-mode-hook))
           (dolist (entry emacspeak-agent-shell--advice-list)
             (should-not (ad-is-active (car entry)))))
@@ -589,6 +667,169 @@ ENTRIES is an alist of qualified block IDs to body strings."
        (emacspeak-agent-shell--handle-lifecycle-event
         '((:event . error)
           (:data (:message . "Connection lost"))))))))
+
+(ert-deftest emacspeak-agent-shell-tool-fixture-announces-transitions ()
+  "Fixture tool transitions should be concise, ordered, and deduplicated."
+  (let ((events
+         (emacspeak-agent-shell-test--tool-call-events
+          "gemini-wrong-output-grouping.traffic"))
+        (emacspeak-agent-shell-speak-tool-calls t)
+        (emacspeak-agent-shell-tool-output-verbosity 'summary))
+    (should (= 6 (length events)))
+    (with-temp-buffer
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (dolist (event events)
+            (emacspeak-agent-shell--handle-tool-call-update event)))
+        '((icon progress)
+          (speak "Tool started: search.")
+          (icon task-done)
+          (speak "Tool completed: search.")
+          (icon progress)
+          (speak "Tool started: README.org.")
+          (icon task-done)
+          (speak "Tool completed: README.org.")
+          (icon progress)
+          (speak "Tool started: acp.el.")
+          (icon task-done)
+          (speak "Tool completed: acp.el.")))))))
+
+(ert-deftest emacspeak-agent-shell-tool-status-verbosity-is-icon-only ()
+  "Status verbosity should cue each real status without speaking titles."
+  (let ((emacspeak-agent-shell-speak-tool-calls t)
+        (emacspeak-agent-shell-tool-output-verbosity 'status))
+    (with-temp-buffer
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (dolist (entry '(("pending" "one")
+                           ("in_progress" "two")
+                           ("completed" "three")
+                           ("failed" "four")))
+            (emacspeak-agent-shell--handle-tool-call-update
+             (emacspeak-agent-shell-test--tool-call-event
+              (cadr entry) (car entry) (cadr entry))))
+          (emacspeak-agent-shell--handle-tool-call-update
+           (emacspeak-agent-shell-test--tool-call-event
+            "future" "waiting_for_agent" "Future status")))
+        '((icon item)
+          (icon progress)
+          (icon task-done)
+          (icon warn-user))))
+      (should-not
+       (emacspeak-agent-shell--tool-call-block-handled-p "future")))))
+
+(ert-deftest emacspeak-agent-shell-tool-full-verbosity-speaks-output ()
+  "Full verbosity should speak terminal text after its status summary."
+  (let ((emacspeak-agent-shell-speak-tool-calls t)
+        (emacspeak-agent-shell-tool-output-verbosity 'full))
+    (with-temp-buffer
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (dolist
+              (event
+               (list
+                (emacspeak-agent-shell-test--tool-call-event
+                 "calculator" "in_progress" "Calculate total")
+                (emacspeak-agent-shell-test--tool-call-event
+                 "calculator" "completed" "Calculate total"
+                 '[((type . "content")
+                    (content (type . "text") (text . "Total: 42")))])
+                (emacspeak-agent-shell-test--tool-call-event
+                 "compiler" "failed" "Compile project"
+                 '[((type . "content")
+                    (content (type . "text")
+                             (text . "Undefined function")))])))
+            (emacspeak-agent-shell--handle-tool-call-update event)))
+        '((icon progress)
+          (speak "Tool started: Calculate total.")
+          (icon task-done)
+          (speak "Tool completed: Calculate total.")
+          (speak "Output: Total: 42")
+          (icon warn-user)
+          (speak "Tool failed: Compile project.")
+          (speak "Output: Undefined function")))))))
+
+(ert-deftest emacspeak-agent-shell-tool-updates-speak-once-per-status ()
+  "Repeated streaming updates should not repeat an unchanged tool status."
+  (let ((event
+         (emacspeak-agent-shell-test--tool-call-event
+          "reader" "in_progress" "Read README"))
+        (emacspeak-agent-shell-speak-tool-calls t)
+        (emacspeak-agent-shell-tool-output-verbosity 'summary))
+    (with-temp-buffer
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-tool-call-update event)
+          (emacspeak-agent-shell--handle-tool-call-update event))
+        '((icon progress)
+          (speak "Tool started: Read README."))))
+      (should (= 1 (hash-table-count
+                    emacspeak-agent-shell--tool-call-status-cache)))
+      (should (emacspeak-agent-shell--tool-call-block-handled-p "reader")))))
+
+(ert-deftest emacspeak-agent-shell-tool-subscription-cleans-state ()
+  "Tool subscriptions and status state should install and clean up once."
+  (let ((buffer (generate-new-buffer " *agent-shell-tool-test*"))
+        (emacspeak-agent-shell-speak-tool-calls t)
+        (emacspeak-agent-shell-tool-output-verbosity 'summary))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local agent-shell--state
+                      (list (cons :buffer buffer)
+                            (cons :event-subscriptions nil)))
+          (emacspeak-agent-shell--tool-call-event-setup)
+          (let ((token emacspeak-agent-shell--tool-call-subscription))
+            (emacspeak-agent-shell--tool-call-event-setup)
+            (should (equal token
+                           emacspeak-agent-shell--tool-call-subscription))
+            (should (= 1 (length (map-elt
+                                  agent-shell--state
+                                  :event-subscriptions)))))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (cl-letf (((symbol-function 'agent-shell--sync-system-sleep)
+                         #'ignore))
+                (agent-shell--emit-event
+                 :event 'tool-call-update
+                 :data
+                 (map-elt
+                  (emacspeak-agent-shell-test--tool-call-event
+                   "reader" "completed" "Read README")
+                  :data))))
+            '((icon task-done)
+              (speak "Tool completed: Read README."))))
+          (should (= 1 (hash-table-count
+                        emacspeak-agent-shell--tool-call-status-cache)))
+          (let ((emacspeak-agent-shell-signal-processing nil))
+            (emacspeak-agent-shell--handle-lifecycle-event
+             '((:event . turn-complete)
+               (:data (:stop-reason . "end_turn")))))
+          (should (= 0 (hash-table-count
+                        emacspeak-agent-shell--tool-call-status-cache)))
+          (emacspeak-agent-shell--tool-call-event-cleanup)
+          (should-not emacspeak-agent-shell--tool-call-subscription)
+          (should-not emacspeak-agent-shell--tool-call-status-cache)
+          (should-not (map-elt agent-shell--state :event-subscriptions)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-tool-feedback-can-be-disabled ()
+  "Disabling tool speech should retain status state without feedback."
+  (let ((emacspeak-agent-shell-speak-tool-calls nil))
+    (with-temp-buffer
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell--handle-tool-call-update
+          (emacspeak-agent-shell-test--tool-call-event
+           "reader" "in_progress" "Read README"))))
+      (should (= 1 (hash-table-count
+                    emacspeak-agent-shell--tool-call-status-cache))))))
 
 (ert-deftest emacspeak-agent-shell-permission-button-feedback-is-semantic ()
   "Focused permission feedback should include choice position and key."
