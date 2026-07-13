@@ -223,6 +223,24 @@
          ,@body
          (nreverse ,event-log)))))
 
+(defun emacspeak-agent-shell-test--face-at-text (string text)
+  "Return STRING's face at the first occurrence of TEXT."
+  (when-let* ((position (string-match (regexp-quote text) string)))
+    (get-text-property position 'face string)))
+
+(defun emacspeak-agent-shell-test--mapped-voices (string)
+  "Return voices mapped from STRING's face runs, in order."
+  (let ((position 0)
+        (end (length string))
+        voices)
+    (while (< position end)
+      (when-let* ((face (get-text-property position 'face string))
+                  (voice (dtk-get-voice-for-face face)))
+        (push voice voices))
+      (setq position
+            (next-single-property-change position 'face string end)))
+    (nreverse voices)))
+
 (defun emacspeak-agent-shell-test--speak-pending (entries)
   "Speak pending ENTRIES and return captured events.
 ENTRIES is an alist of qualified block IDs to body strings."
@@ -573,18 +591,56 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            :thought-level "xhigh"
            :mode "Agent (full access)"
            :context-percentage 73
-           :session-id "session-123")))
+           :session-id "session-123"))
+        full)
     (should
      (equal (emacspeak-agent-shell--format-brief-header state)
             "Codex agent, emacspeak-support, busy."))
+    (should-not
+     (text-property-not-all
+      0 (length (emacspeak-agent-shell--format-brief-header state))
+      'face nil
+      (emacspeak-agent-shell--format-brief-header state)))
+    (setq full (emacspeak-agent-shell--format-full-header state))
     (should
      (equal
-      (emacspeak-agent-shell--format-full-header state)
+      full
       (concat
        "Codex agent. Project emacspeak-support. Busy. "
        "Model GPT-5.6-Sol. Thought level xhigh. "
        "Mode Agent (full access). Context 73 percent. "
-       "Session ID session-123.")))))
+       "Session ID session-123.")))
+    (dolist (entry
+             '(("Codex agent" . agent-shell-buffer-name)
+               ("Project emacspeak-support" . agent-shell-session-directory)
+               ("Busy" . agent-shell-warning)
+               ("Model GPT-5.6-Sol" . agent-shell-model)
+               ("Thought level xhigh" . agent-shell-thought-level)
+               ("Mode Agent (full access)" . agent-shell-session-mode)
+               ("Context 73 percent" . agent-shell-warning)
+               ("Session ID session-123" . agent-shell-session-id)))
+      (should
+       (eq (emacspeak-agent-shell-test--face-at-text full (car entry))
+           (cdr entry))))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--mapped-voices full)
+      '(voice-animate voice-lighten-extra voice-brighten
+        voice-brighten-extra voice-animate-extra voice-smoothen
+        voice-brighten voice-lighten)))))
+
+(ert-deftest emacspeak-agent-shell-context-header-voices-usage-severity ()
+  "Context header speech should follow agent-shell's usage thresholds."
+  (dolist (entry '((59 . agent-shell-success)
+                   (60 . agent-shell-warning)
+                   (84 . agent-shell-warning)
+                   (85 . agent-shell-error)))
+    (let ((speech
+           (emacspeak-agent-shell--format-full-header
+            (list :context-percentage (car entry)))))
+      (should
+       (eq (emacspeak-agent-shell-test--face-at-text speech "Context")
+           (cdr entry))))))
 
 (ert-deftest emacspeak-agent-shell-header-formatters-describe-viewport ()
   "Viewport focus speech should include position and interaction status."
@@ -689,7 +745,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          "Codex agent. Project emacspeak-support. Model GPT-5.6-Sol."))))))
 
 (ert-deftest emacspeak-agent-shell-mode-line-command-speaks-full-header ()
-  "Interactive mode-line speech should read full semantic agent state."
+  "Interactive mode-line speech should read and voice semantic agent state."
   (let ((buffer (generate-new-buffer " *agent-mode-line-header-test*")))
     (unwind-protect
         (save-window-excursion
@@ -701,18 +757,26 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                        '(:agent "Codex agent"
                          :project "emacspeak-support"
                          :model "GPT-5.6-Sol"))))
-            (should
-             (equal
-              (emacspeak-agent-shell-test--capture-events
-                (call-interactively #'emacspeak-speak-mode-line))
-              (list
-               '(stop nil)
-               '(icon item)
-               (list
-                'speak
-                (concat
-                 "Codex agent. Project emacspeak-support. "
-                 "Model GPT-5.6-Sol.")))))))
+            (let* ((events
+                    (emacspeak-agent-shell-test--capture-events
+                      (call-interactively #'emacspeak-speak-mode-line)))
+                   (speech (cadr (nth 2 events))))
+              (should
+               (equal
+                events
+                (list
+                 '(stop nil)
+                 '(icon item)
+                 (list
+                  'speak
+                  (concat
+                   "Codex agent. Project emacspeak-support. "
+                   "Model GPT-5.6-Sol.")))))
+              (should
+               (equal
+                (emacspeak-agent-shell-test--mapped-voices speech)
+                '(voice-animate voice-lighten-extra
+                  voice-brighten-extra))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

@@ -62,6 +62,8 @@
 (require 'agent-shell)
 (require 'shell-maker)
 
+(declare-function agent-shell--context-usage-face
+                  "agent-shell-usage" (percentage))
 (declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
 
 ;;;  Customization
@@ -524,34 +526,64 @@ accessors where agent-shell provides them."
     (when parts
       (concat (mapconcat #'identity parts ", ") "."))))
 
+(defun emacspeak-agent-shell--header-context-face (percentage)
+  "Return agent-shell's semantic face for context PERCENTAGE.
+Use the guarded private helper when available so speech follows the graphical
+indicator; retain current agent-shell thresholds as a compatibility fallback."
+  (if (fboundp 'agent-shell--context-usage-face)
+      (agent-shell--context-usage-face percentage)
+    ;; Preserve useful contrast with agent-shell releases predating the helper.
+    (cond
+     ((>= percentage 85) 'agent-shell-error)
+     ((>= percentage 60) 'agent-shell-warning)
+     (t 'agent-shell-success))))
+
+(defun emacspeak-agent-shell--header-status-face (status)
+  "Return the semantic viewport face for spoken STATUS."
+  (pcase status
+    ((or "edit" "edit queue") 'agent-shell-viewport-status-edit)
+    ("busy" 'agent-shell-viewport-status-busy)
+    ("view" 'agent-shell-viewport-status-view)))
+
 (defun emacspeak-agent-shell--format-full-header (state)
-  "Return a full spoken description of semantic header STATE."
+  "Return a voiced full spoken description of semantic header STATE."
   (let ((parts
          (delq
           nil
           (list
-           (plist-get state :agent)
+           (when-let* ((agent (plist-get state :agent)))
+             (propertize agent 'face 'agent-shell-buffer-name))
            (when-let* ((project (plist-get state :project)))
-             (format "Project %s" project))
+             (propertize (format "Project %s" project)
+                         'face 'agent-shell-session-directory))
            (when (and (plist-get state :busy)
                       (not (plist-get state :viewport-status)))
-             "Busy")
+             (propertize "Busy" 'face 'agent-shell-warning))
            (when-let* ((position (plist-get state :viewport-position)))
              (format "Viewport %s" position))
            (when-let* ((status (plist-get state :viewport-status)))
-             (concat (upcase (substring status 0 1))
-                     (substring status 1)))
+             (propertize
+              (concat (upcase (substring status 0 1))
+                      (substring status 1))
+              'face (emacspeak-agent-shell--header-status-face status)))
            (when-let* ((model (plist-get state :model)))
-             (format "Model %s" model))
+             (propertize (format "Model %s" model)
+                         'face 'agent-shell-model))
            (when-let* ((thought (plist-get state :thought-level)))
-             (format "Thought level %s" thought))
+             (propertize (format "Thought level %s" thought)
+                         'face 'agent-shell-thought-level))
            (when-let* ((mode (plist-get state :mode)))
-             (format "Mode %s" mode))
+             (propertize (format "Mode %s" mode)
+                         'face 'agent-shell-session-mode))
            (when-let* ((percentage
                         (plist-get state :context-percentage)))
-             (format "Context %d percent" percentage))
+             (propertize
+              (format "Context %d percent" percentage)
+              'face
+              (emacspeak-agent-shell--header-context-face percentage)))
            (when-let* ((session-id (plist-get state :session-id)))
-             (format "Session ID %s" session-id))))))
+             (propertize (format "Session ID %s" session-id)
+                         'face 'agent-shell-session-id))))))
     (when parts
       (concat (mapconcat #'identity parts ". ") "."))))
 

@@ -41,7 +41,9 @@ Completed so far:
   reading through Emacspeak's standard `C-e m` mode-line command;
 - explicit voice mappings for all current agent-shell interface faces, with
   semantic contrast for success, busy, failure, and pending states and a
-  deliberately neutral viewport view state;
+  deliberately neutral viewport view state; the full `C-e m` header reading
+  applies these voices to its semantic clauses while automatic focus speech
+  remains plain;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -168,7 +170,9 @@ session selector controls the backing shell from viewport mode.  Selecting
   faces.  The separate agent-shell Markdown faces remain to be mapped after
   listening tests establish that the core voice set is useful.
 - Speech setup now preserves agent-shell's semantic header line; graphical
-  headers receive separate concise and full semantic speech paths.
+  headers receive separate concise and full semantic speech paths.  Context
+  severity uses the guarded private `agent-shell--context-usage-face` helper
+  when available, with tested compatibility thresholds for older releases.
 - Every shell can autospeak, so concurrent background agents lack a clear
   announcement policy or buffer identity.  Focus-aware levels now suppress
   background response and tool chatter by default; completed background turns
@@ -265,6 +269,10 @@ to both existing and newly created shell buffers.
   buffer-information behavior is preserved.  Animated busy frames are
   represented once as "busy", and graphical key-binding hints remain available
   through agent-shell help rather than being read on every focus change.
+  The full semantic header preserves agent-shell's face distinctions as speech
+  voices for agent, project, status, model, thought level, session mode, context
+  severity, and session ID.  The concise automatic focus summary remains plain
+  speech to avoid excessive voice changes.
 
 ## Implementation Phases
 
