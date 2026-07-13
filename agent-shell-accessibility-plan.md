@@ -38,7 +38,7 @@ Completed so far:
   including suppression of false success and declined-cancellation cues;
 - preservation of agent-shell's text and graphical headers, with concise
   semantic focus speech for otherwise silent SVG headers and a full-state
-  interactive reading command;
+  reading through Emacspeak's standard `C-e m` mode-line command;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -255,11 +255,12 @@ to both existing and newly created shell buffers.
 - Preserve agent-shell's header-line information instead of replacing it.
   When a graphical header has no textual representation, entering the buffer
   speaks a concise semantic summary: agent, project, viewport position and
-  status, or busy state.  An explicit command reads the full state on demand,
-  adding model, thought level, session mode, context usage, and the optional
-  session ID.  Animated busy frames are represented once as "busy", and
-  graphical key-binding hints remain available through agent-shell help rather
-  than being read on every focus change.
+  status, or busy state.  Interactive `emacspeak-speak-mode-line`, normally
+  bound to `C-e m`, reads the full state on demand, adding model, thought level,
+  session mode, context usage, and the optional session ID.  Its prefix-argument
+  buffer-information behavior is preserved.  Animated busy frames are
+  represented once as "busy", and graphical key-binding hints remain available
+  through agent-shell help rather than being read on every focus change.
 
 ## Implementation Phases
 

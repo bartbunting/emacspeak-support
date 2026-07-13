@@ -686,6 +686,81 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (speak
          "Codex agent. Project emacspeak-support. Model GPT-5.6-Sol."))))))
 
+(ert-deftest emacspeak-agent-shell-mode-line-command-speaks-full-header ()
+  "Interactive mode-line speech should read full semantic agent state."
+  (let ((buffer (generate-new-buffer " *agent-mode-line-header-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode))
+          (cl-letf (((symbol-function 'emacspeak-agent-shell--header-state)
+                     (lambda (&optional _buffer)
+                       '(:agent "Codex agent"
+                         :project "emacspeak-support"
+                         :model "GPT-5.6-Sol"))))
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (call-interactively #'emacspeak-speak-mode-line))
+              (list
+               '(stop nil)
+               '(icon item)
+               (list
+                'speak
+                (concat
+                 "Codex agent. Project emacspeak-support. "
+                 "Model GPT-5.6-Sol.")))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-mode-line-prefix-retains-buffer-info ()
+  "A prefix argument should preserve Emacspeak's buffer-information path."
+  (let ((buffer (generate-new-buffer " *agent-mode-line-prefix-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode))
+          (cl-letf (((symbol-function 'emacspeak-speak-buffer-info)
+                     (lambda () (dtk-speak "standard buffer information"))))
+            (let ((current-prefix-arg '(4)))
+              (should
+               (equal
+                (emacspeak-agent-shell-test--capture-events
+                  (call-interactively #'emacspeak-speak-mode-line))
+                '((stop nil)
+                  (speak "standard buffer information")))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-automatic-mode-line-remains-concise ()
+  "Noninteractive mode-line speech should retain concise focus feedback."
+  (let ((buffer (generate-new-buffer " *agent-mode-line-focus-test*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode
+                  header-line-format "  "))
+          (cl-letf (((symbol-function 'format-mode-line)
+                     (lambda (&rest _) "  "))
+                    ((symbol-function
+                      'emacspeak-agent-shell--header-state)
+                     (lambda (&optional _buffer)
+                       '(:agent "Codex agent"
+                         :project "emacspeak-support"
+                         :busy t))))
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (emacspeak-speak-mode-line))
+              '((stop nil)
+                (icon item)
+                (notify "Codex agent, emacspeak-support, busy."))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest emacspeak-agent-shell-delayed-agent-message-speaks-once ()
   "A complete agent message should be delivered once."
   (should

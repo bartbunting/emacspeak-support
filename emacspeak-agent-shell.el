@@ -1026,6 +1026,23 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
 
 ;;;  Advice Agent-Shell Functions
 
+(defadvice emacspeak-speak-mode-line (around emacspeak pre act comp)
+  "Read the full semantic header when invoked interactively in agent-shell.
+Automatic mode-line speech continues through the normal Emacspeak path, as
+does an interactive call with a prefix argument for buffer information."
+  (let ((buffer-info (ad-get-arg 0))
+        (target (window-buffer (selected-window))))
+    (if (and (null buffer-info)
+             (ems-interactive-p)
+             (buffer-live-p target)
+             (with-current-buffer target
+               (derived-mode-p 'agent-shell-mode
+                               'agent-shell-viewport-view-mode
+                               'agent-shell-viewport-edit-mode)))
+        (with-current-buffer target
+          (emacspeak-agent-shell-speak-header))
+      ad-do-it)))
+
 (defadvice emacspeak-speak-header-line (around emacspeak pre act comp)
   "Speak semantic agent-shell state when a graphical header has no text."
   (or (emacspeak-agent-shell--speak-focus-header-if-needed)
@@ -2673,7 +2690,8 @@ the corresponding buffer boundary."
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
-  '((emacspeak-speak-header-line around)
+  '((emacspeak-speak-mode-line around)
+    (emacspeak-speak-header-line around)
     (agent-shell after)
     (agent-shell-start after)
     (agent-shell-new-shell after)
