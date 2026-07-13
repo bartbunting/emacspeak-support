@@ -16,12 +16,16 @@
 (require 'emacspeak-agent-shell)
 
 (defvar emacspeak-agent-shell--advice-list)
+(defvar emacspeak-agent-shell--permission-action-cache)
+(defvar emacspeak-agent-shell--permission-response-subscription)
 (defvar emacspeak-agent-shell--permission-subscription)
 (defvar emacspeak-agent-shell-speak-permissions)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
                   "emacspeak-agent-shell" (buffer qualified-ids))
 (declare-function emacspeak-agent-shell--handle-permission-request
+                  "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--handle-permission-response
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--permission-button-feedback
                   "emacspeak-agent-shell" ())
@@ -136,7 +140,8 @@ ENTRIES is an alist of qualified block IDs to body strings."
     (list
      (cons :event 'permission-request)
      (cons :data
-           (list (cons :tool-call-id tool-call-id)
+           (list (cons :request-id (map-elt object 'id))
+                 (cons :tool-call-id tool-call-id)
                  (cons :tool-call
                        (list (cons :title title)
                              (cons :permission-actions actions))))))))
@@ -164,6 +169,25 @@ ENTRIES is an alist of qualified block IDs to body strings."
                                    choices)
                            " ")))))
           events)))
+
+(defun emacspeak-agent-shell-test--permission-response-event
+    (request-event &optional kind cancelled)
+  "Make a response for REQUEST-EVENT selecting KIND or CANCELLED."
+  (let* ((data (map-elt request-event :data))
+         (actions (map-nested-elt request-event
+                                  '(:data :tool-call :permission-actions)))
+         (action (and kind
+                      (seq-find
+                       (lambda (candidate)
+                         (equal (map-elt candidate :kind) kind))
+                       actions))))
+    (list
+     (cons :event 'permission-response)
+     (cons :data
+           (list (cons :request-id (map-elt data :request-id))
+                 (cons :tool-call-id (map-elt data :tool-call-id))
+                 (cons :option-id (map-elt action :option-id))
+                 (cons :cancelled cancelled))))))
 
 (defun emacspeak-agent-shell-test--insert-permission-buttons ()
   "Insert three navigatable permission buttons for focus tests."
@@ -302,7 +326,7 @@ ENTRIES is an alist of qualified block IDs to body strings."
               (emacspeak-agent-shell--permission-event-setup)
               (should (equal token
                              emacspeak-agent-shell--permission-subscription))
-              (should (= 1 (length (map-elt
+              (should (= 2 (length (map-elt
                                     agent-shell--state
                                     :event-subscriptions)))))
             (setq timer (run-with-timer 3600 nil #'ignore))
@@ -327,8 +351,13 @@ ENTRIES is an alist of qualified block IDs to body strings."
             (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
             (should (= 0 (hash-table-count
                           emacspeak-agent-shell--pending-bodies)))
+            (should (= 1 (hash-table-count
+                          emacspeak-agent-shell--permission-action-cache)))
             (emacspeak-agent-shell--permission-event-cleanup)
             (should-not emacspeak-agent-shell--permission-subscription)
+            (should-not
+             emacspeak-agent-shell--permission-response-subscription)
+            (should-not emacspeak-agent-shell--permission-action-cache)
             (should-not (map-elt agent-shell--state
                                  :event-subscriptions))))
       (when (timerp timer)
@@ -357,6 +386,54 @@ ENTRIES is an alist of qualified block IDs to body strings."
       (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
       (should (= 0 (hash-table-count
                     emacspeak-agent-shell--pending-bodies))))))
+
+(ert-deftest emacspeak-agent-shell-permission-responses-are-semantic ()
+  "Allow, reject, and cancel responses should identify their outcomes."
+  (with-temp-buffer
+    (let* ((requests
+            (emacspeak-agent-shell-test--permission-requests
+             "gemini-multiple-permissions.traffic"))
+           (events (mapcar #'emacspeak-agent-shell-test--permission-event
+                           requests))
+           (first (nth 0 events))
+           (second (nth 1 events)))
+      (ignore
+       (emacspeak-agent-shell-test--capture-events
+         (dolist (event events)
+           (emacspeak-agent-shell--handle-permission-request event))))
+      (should (= 2 (hash-table-count
+                    emacspeak-agent-shell--permission-action-cache)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-permission-response
+           (emacspeak-agent-shell-test--permission-response-event
+            first "allow_always")))
+        '((icon select-object)
+          (speak "Permission granted: Always Allow git, head."))))
+      (should (= 1 (hash-table-count
+                    emacspeak-agent-shell--permission-action-cache)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-permission-response
+           (emacspeak-agent-shell-test--permission-response-event
+            second "reject_once")))
+        '((icon close-object)
+          (speak "Permission denied: Reject."))))
+      (should (= 0 (hash-table-count
+                    emacspeak-agent-shell--permission-action-cache)))
+      (ignore
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell--handle-permission-request first)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-permission-response
+           (emacspeak-agent-shell-test--permission-response-event
+            first nil t)))
+        '((icon close-object)
+          (speak "Permission cancelled.")))))))
 
 (ert-deftest emacspeak-agent-shell-permission-button-feedback-is-semantic ()
   "Focused permission feedback should include choice position and key."

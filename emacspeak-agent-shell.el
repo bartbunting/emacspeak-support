@@ -207,6 +207,12 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 (defvar-local emacspeak-agent-shell--permission-subscription nil
   "Subscription token for permission request events in this shell.")
 
+(defvar-local emacspeak-agent-shell--permission-response-subscription nil
+  "Subscription token for permission response events in this shell.")
+
+(defvar-local emacspeak-agent-shell--permission-action-cache nil
+  "Hash table mapping pending permission requests to normalized actions.")
+
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
 When agent output streams in chunks, wait this long after the last
@@ -264,6 +270,16 @@ chunk arrives before speaking the complete text."
 
 (defun emacspeak-agent-shell--handle-permission-request (event)
   "Interrupt current speech and announce permission request EVENT."
+  (let* ((data (map-elt event :data))
+         (key (or (map-elt data :request-id)
+                  (map-elt data :tool-call-id)))
+         (actions (map-nested-elt event '(:data :tool-call
+                                                :permission-actions))))
+    (when key
+      (unless (hash-table-p emacspeak-agent-shell--permission-action-cache)
+        (setq emacspeak-agent-shell--permission-action-cache
+              (make-hash-table :test #'equal)))
+      (puthash key actions emacspeak-agent-shell--permission-action-cache)))
   ;; The private fragment advice has already seen the visual permission
   ;; block.  Discard that delayed copy to avoid a duplicate announcement.
   (emacspeak-agent-shell--cancel-pending-speech)
@@ -272,25 +288,76 @@ chunk arrives before speaking the complete text."
     (emacspeak-icon 'warn-user)
     (dtk-speak (emacspeak-agent-shell--permission-announcement event))))
 
+(defun emacspeak-agent-shell--handle-permission-response (event)
+  "Announce the semantic result of permission response EVENT."
+  (let* ((data (map-elt event :data))
+         (key (or (map-elt data :request-id)
+                  (map-elt data :tool-call-id)))
+         (option-id (map-elt data :option-id))
+         (cancelled (map-elt data :cancelled))
+         (actions (and key
+                       (hash-table-p
+                        emacspeak-agent-shell--permission-action-cache)
+                       (gethash key
+                                emacspeak-agent-shell--permission-action-cache)))
+         (action (seq-find
+                  (lambda (candidate)
+                    (equal option-id (map-elt candidate :option-id)))
+                  actions))
+         (option (map-elt action :option))
+         (kind (map-elt action :kind)))
+    (when (and key
+               (hash-table-p emacspeak-agent-shell--permission-action-cache))
+      (remhash key emacspeak-agent-shell--permission-action-cache))
+    (when emacspeak-agent-shell-speak-permissions
+      (cond
+       (cancelled
+        (emacspeak-icon 'close-object)
+        (dtk-speak "Permission cancelled."))
+       ((equal kind "reject_once")
+        (emacspeak-icon 'close-object)
+        (dtk-speak (format "Permission denied: %s."
+                           (or option "Reject"))))
+       ((member kind '("allow_once" "allow_always"))
+        (emacspeak-icon 'select-object)
+        (dtk-speak (format "Permission granted: %s."
+                           (or option "Allow"))))
+       (t
+        (emacspeak-icon 'select-object)
+        (dtk-speak "Permission response sent."))))))
+
 (defun emacspeak-agent-shell--permission-event-setup ()
-  "Subscribe the current agent-shell buffer to permission requests."
+  "Subscribe the current agent-shell buffer to permission events."
   (unless emacspeak-agent-shell--permission-subscription
     (setq emacspeak-agent-shell--permission-subscription
           (agent-shell-subscribe-to
            :shell-buffer (current-buffer)
            :event 'permission-request
            :on-event #'emacspeak-agent-shell--handle-permission-request)))
+  (unless emacspeak-agent-shell--permission-response-subscription
+    (setq emacspeak-agent-shell--permission-response-subscription
+          (agent-shell-subscribe-to
+           :shell-buffer (current-buffer)
+           :event 'permission-response
+           :on-event #'emacspeak-agent-shell--handle-permission-response)))
   (add-hook 'kill-buffer-hook
             #'emacspeak-agent-shell--permission-event-cleanup nil t)
   (add-hook 'change-major-mode-hook
             #'emacspeak-agent-shell--permission-event-cleanup nil t))
 
 (defun emacspeak-agent-shell--permission-event-cleanup ()
-  "Remove the current buffer's permission request subscription."
+  "Remove the current buffer's permission subscriptions and cached state."
   (when emacspeak-agent-shell--permission-subscription
     (agent-shell-unsubscribe
      :subscription emacspeak-agent-shell--permission-subscription)
     (setq emacspeak-agent-shell--permission-subscription nil))
+  (when emacspeak-agent-shell--permission-response-subscription
+    (agent-shell-unsubscribe
+     :subscription emacspeak-agent-shell--permission-response-subscription)
+    (setq emacspeak-agent-shell--permission-response-subscription nil))
+  (when (hash-table-p emacspeak-agent-shell--permission-action-cache)
+    (clrhash emacspeak-agent-shell--permission-action-cache))
+  (setq emacspeak-agent-shell--permission-action-cache nil)
   (remove-hook 'kill-buffer-hook
                #'emacspeak-agent-shell--permission-event-cleanup t)
   (remove-hook 'change-major-mode-hook
@@ -722,7 +789,8 @@ do not stack earcons."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (and (derived-mode-p 'agent-shell-mode)
-                 emacspeak-agent-shell--permission-subscription)
+                 (or emacspeak-agent-shell--permission-subscription
+                     emacspeak-agent-shell--permission-response-subscription))
         (emacspeak-agent-shell--permission-event-cleanup))))
   (message "Disabled Emacspeak agent-shell support"))
 
