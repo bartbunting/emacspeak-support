@@ -36,7 +36,8 @@ Completed so far:
 - current viewport compose submission and accepted-cancellation feedback,
   including suppression of false success and declined-cancellation cues;
 - semantic Markdown table-cell feedback in shell and viewport navigation,
-  with configurable row/column titles and data-first or title-first order; and
+  with configurable row/column titles, data-first or title-first order, and
+  an interactive speech-method selector; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 

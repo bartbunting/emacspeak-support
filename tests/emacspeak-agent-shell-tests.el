@@ -69,6 +69,8 @@
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-select-speaking-method
+                  "emacspeak-agent-shell" ())
 
 (declare-function agent-shell--make-permission-button
                   "agent-shell" (&rest arguments))
@@ -921,6 +923,54 @@ ENTRIES is an alist of qualified block IDs to body strings."
           (emacspeak-agent-shell-test--capture-events
             (emacspeak-agent-shell--table-cell-feedback))
           `((icon item) (speak ,(nth 2 case)))))))))
+
+(ert-deftest emacspeak-agent-shell-table-speaking-method-is-interactive ()
+  "The table selector should toggle each setting and announce full state."
+  (let ((emacspeak-agent-shell-table-titles '(column))
+        (emacspeak-agent-shell-table-data-position 'first)
+        (keys '(?c ?r ?o ?c)))
+    (cl-letf (((symbol-function 'read-char-choice)
+               (lambda (prompt choices)
+                 (should (string-prefix-p "Toggle table speech" prompt))
+                 (should (equal choices '(?c ?r ?o)))
+                 (pop keys))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively
+           #'emacspeak-agent-shell-table-select-speaking-method))
+        '((icon button)
+          (speak
+           "Table speech: data first; column titles off; row titles off."))))
+      (should-not emacspeak-agent-shell-table-titles)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively
+           #'emacspeak-agent-shell-table-select-speaking-method))
+        '((icon button)
+          (speak
+           "Table speech: data first; column titles off; row titles on."))))
+      (should (equal emacspeak-agent-shell-table-titles '(row)))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively
+           #'emacspeak-agent-shell-table-select-speaking-method))
+        '((icon button)
+          (speak
+           "Table speech: titles first; column titles off; row titles on."))))
+      (should (eq emacspeak-agent-shell-table-data-position 'last))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively
+           #'emacspeak-agent-shell-table-select-speaking-method))
+        '((icon button)
+          (speak
+           "Table speech: titles first; column titles on; row titles on."))))
+      (should (equal emacspeak-agent-shell-table-titles '(column row)))
+      (should-not keys))))
 
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."

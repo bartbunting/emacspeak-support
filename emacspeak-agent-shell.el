@@ -818,6 +818,44 @@ Markdown renderer."
     (dtk-speak (emacspeak-agent-shell--table-cell-speech cell))
     t))
 
+(defun emacspeak-agent-shell--table-settings-speech ()
+  "Return a complete spoken summary of the table speech settings."
+  (format "Table speech: %s; column titles %s; row titles %s."
+          (if (eq emacspeak-agent-shell-table-data-position 'first)
+              "data first"
+            "titles first")
+          (if (memq 'column emacspeak-agent-shell-table-titles) "on" "off")
+          (if (memq 'row emacspeak-agent-shell-table-titles) "on" "off")))
+
+(defun emacspeak-agent-shell--toggle-table-title (title)
+  "Toggle table TITLE and retain canonical column, row ordering."
+  (let ((titles
+         (if (memq title emacspeak-agent-shell-table-titles)
+             (remove title emacspeak-agent-shell-table-titles)
+           (cons title emacspeak-agent-shell-table-titles))))
+    (setq emacspeak-agent-shell-table-titles
+          (seq-filter (lambda (candidate) (memq candidate titles))
+                      '(column row)))))
+
+(defun emacspeak-agent-shell-table-select-speaking-method ()
+  "Interactively change automatic Markdown table cell speech.
+Press c to toggle column titles, r to toggle row titles, or o to
+switch between data-first and title-first ordering.  Speak the complete
+resulting configuration after the change."
+  (interactive)
+  (pcase
+      (read-char-choice
+       "Toggle table speech: c column titles, r row titles, o order: "
+       '(?c ?r ?o))
+    (?c (emacspeak-agent-shell--toggle-table-title 'column))
+    (?r (emacspeak-agent-shell--toggle-table-title 'row))
+    (?o (setq emacspeak-agent-shell-table-data-position
+              (if (eq emacspeak-agent-shell-table-data-position 'first)
+                  'last
+                'first))))
+  (emacspeak-icon 'button)
+  (dtk-speak (emacspeak-agent-shell--table-settings-speech)))
+
 (defun emacspeak-agent-shell--permission-button-text-at-point ()
   "Return the visible permission button text at point, without decoration."
   (when (get-text-property (point) 'agent-shell-permission-button)
