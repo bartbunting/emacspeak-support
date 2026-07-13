@@ -147,6 +147,35 @@ ENTRIES is an alist of qualified block IDs to body strings."
      (agent-shell-markdown-replace-markup)
      ,@body))
 
+(defun emacspeak-agent-shell-test--table-entry (command mode direction)
+  "Run table entry COMMAND in MODE and return events plus target character.
+DIRECTION is `forward' or `backward'."
+  (with-temp-buffer
+    (insert "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter")
+    (agent-shell-markdown-replace-markup)
+    (goto-char (point-min))
+    (let ((table-start
+           (next-single-property-change
+            (point) 'agent-shell-markdown-table-source nil (point-max)))
+          (emacspeak-agent-shell-table-titles '(column))
+          (emacspeak-agent-shell-table-data-position 'first))
+      (setq major-mode mode)
+      (goto-char (if (eq direction 'forward) (point-min) (point-max)))
+      (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t))
+                ((symbol-function 'comint-next-prompt) (lambda (&rest _) nil))
+                ((symbol-function 'agent-shell-ui-forward-block)
+                 (lambda () table-start))
+                ((symbol-function 'agent-shell-ui-backward-block)
+                 (lambda () table-start))
+                ((symbol-function 'agent-shell-next-permission-button)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-previous-permission-button)
+                 (lambda () nil)))
+        (let ((events
+               (emacspeak-agent-shell-test--capture-events
+                 (call-interactively command))))
+          (list events (char-after)))))))
+
 (defun emacspeak-agent-shell-test--read-traffic (filename)
   "Read agent-shell traffic fixture FILENAME as Lisp data."
   (with-temp-buffer
@@ -1019,6 +1048,35 @@ ENTRIES is an alist of qualified block IDs to body strings."
        (should-error
         (call-interactively #'emacspeak-agent-shell-table-speak-context)
         :type 'user-error)))))
+
+(ert-deftest emacspeak-agent-shell-table-entry-is-directional-in-both-views ()
+  "Table entry should target first/last cells in shell and viewport modes."
+  (dolist (case
+           `((agent-shell-next-item
+              agent-shell-mode forward
+              ((icon open-object)
+               (speak "Table, 1 data row, 2 columns. A."))
+              ,?A)
+             (agent-shell-previous-item
+              agent-shell-mode backward
+              ((icon open-object)
+               (speak "Table, 1 data row, 2 columns. 2, B."))
+              ,?2)
+             (agent-shell-viewport-next-item
+              agent-shell-viewport-view-mode forward
+              ((icon open-object)
+               (speak "Table, 1 data row, 2 columns. A."))
+              ,?A)
+             (agent-shell-viewport-previous-item
+              agent-shell-viewport-view-mode backward
+              ((icon open-object)
+               (speak "Table, 1 data row, 2 columns. 2, B."))
+              ,?2)))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--table-entry
+       (nth 0 case) (nth 1 case) (nth 2 case))
+      (list (nth 3 case) (nth 4 case))))))
 
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."

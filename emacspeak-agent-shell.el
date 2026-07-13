@@ -843,6 +843,34 @@ Markdown renderer."
       (format "Row %d of %d, column %d of %d."
               (1+ row-index) row-count column column-count)))))
 
+(defun emacspeak-agent-shell--table-dimensions-speech (cell)
+  "Format the dimensions of the table containing semantic CELL."
+  (let* ((column-titles-p (plist-get cell :column-titles-p))
+         (rows (- (plist-get cell :row-count)
+                  (if column-titles-p 1 0)))
+         (columns (plist-get cell :column-count)))
+    (format "Table, %d %s, %d %s."
+            rows
+            (if column-titles-p
+                (if (= rows 1) "data row" "data rows")
+              (if (= rows 1) "row" "rows"))
+            columns
+            (if (= columns 1) "column" "columns"))))
+
+(defun emacspeak-agent-shell--table-entry-feedback (direction)
+  "Enter and speak the table at point in navigation DIRECTION."
+  (when-let* ((region (emacspeak-agent-shell--markdown-table-region-at-point))
+              (starts
+               (emacspeak-agent-shell--markdown-table-cell-starts region)))
+    (goto-char (if (eq direction 'forward) (car starts) (car (last starts))))
+    (when-let* ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (emacspeak-icon 'open-object)
+      (dtk-speak
+       (concat (emacspeak-agent-shell--table-dimensions-speech cell)
+               " "
+               (emacspeak-agent-shell--table-cell-speech cell)))
+      t)))
+
 (defun emacspeak-agent-shell-table-speak-context ()
   "Speak current Markdown table position and dimensions."
   (interactive)
@@ -944,21 +972,37 @@ resulting configuration after the change."
                (if key (format " or %s" key) "")))
       t)))
 
-(defadvice agent-shell-next-item (after emacspeak pre act comp)
-  "Speak the item at point after navigation."
-  (when (ems-interactive-p)
-    (unless (or (emacspeak-agent-shell--permission-button-feedback)
-                (emacspeak-agent-shell--table-cell-feedback))
-      (emacspeak-icon 'item)
-      (emacspeak-speak-line))))
+(defadvice agent-shell-next-item (around emacspeak pre act comp)
+  "Speak the item at point after navigation, including table entry."
+  (let ((interactive-p (ems-interactive-p))
+        (started-in-table-p
+         (get-text-property (point) 'agent-shell-markdown-table-source)))
+    ad-do-it
+    (when interactive-p
+      (unless (or (and (not started-in-table-p)
+                       (get-text-property
+                        (point) 'agent-shell-markdown-table-source)
+                       (emacspeak-agent-shell--table-entry-feedback 'forward))
+                  (emacspeak-agent-shell--permission-button-feedback)
+                  (emacspeak-agent-shell--table-cell-feedback))
+        (emacspeak-icon 'item)
+        (emacspeak-speak-line)))))
 
-(defadvice agent-shell-previous-item (after emacspeak pre act comp)
-  "Speak the item at point after navigation."
-  (when (ems-interactive-p)
-    (unless (or (emacspeak-agent-shell--permission-button-feedback)
-                (emacspeak-agent-shell--table-cell-feedback))
-      (emacspeak-icon 'item)
-      (emacspeak-speak-line))))
+(defadvice agent-shell-previous-item (around emacspeak pre act comp)
+  "Speak the item at point after navigation, including table entry."
+  (let ((interactive-p (ems-interactive-p))
+        (started-in-table-p
+         (get-text-property (point) 'agent-shell-markdown-table-source)))
+    ad-do-it
+    (when interactive-p
+      (unless (or (and (not started-in-table-p)
+                       (get-text-property
+                        (point) 'agent-shell-markdown-table-source)
+                       (emacspeak-agent-shell--table-entry-feedback 'backward))
+                  (emacspeak-agent-shell--permission-button-feedback)
+                  (emacspeak-agent-shell--table-cell-feedback))
+        (emacspeak-icon 'item)
+        (emacspeak-speak-line)))))
 
 (defadvice agent-shell-jump-to-latest-permission-button-row (after emacspeak pre act comp)
   "Announce jump to permission."
@@ -997,15 +1041,31 @@ resulting configuration after the change."
 
 ;;;  Viewport Mode Integration
 
-(defadvice agent-shell-viewport-next-item (after emacspeak pre act comp)
-  "Speak the semantic table cell reached in the viewport."
-  (when (ems-interactive-p)
-    (emacspeak-agent-shell--table-cell-feedback)))
+(defadvice agent-shell-viewport-next-item (around emacspeak pre act comp)
+  "Speak semantic table movement and entry in the viewport."
+  (let ((interactive-p (ems-interactive-p))
+        (started-in-table-p
+         (get-text-property (point) 'agent-shell-markdown-table-source)))
+    ad-do-it
+    (when interactive-p
+      (or (and (not started-in-table-p)
+               (get-text-property
+                (point) 'agent-shell-markdown-table-source)
+               (emacspeak-agent-shell--table-entry-feedback 'forward))
+          (emacspeak-agent-shell--table-cell-feedback)))))
 
-(defadvice agent-shell-viewport-previous-item (after emacspeak pre act comp)
-  "Speak the semantic table cell reached in the viewport."
-  (when (ems-interactive-p)
-    (emacspeak-agent-shell--table-cell-feedback)))
+(defadvice agent-shell-viewport-previous-item (around emacspeak pre act comp)
+  "Speak semantic table movement and entry in the viewport."
+  (let ((interactive-p (ems-interactive-p))
+        (started-in-table-p
+         (get-text-property (point) 'agent-shell-markdown-table-source)))
+    ad-do-it
+    (when interactive-p
+      (or (and (not started-in-table-p)
+               (get-text-property
+                (point) 'agent-shell-markdown-table-source)
+               (emacspeak-agent-shell--table-entry-feedback 'backward))
+          (emacspeak-agent-shell--table-cell-feedback)))))
 
 (defadvice agent-shell-viewport--show-buffer (after emacspeak pre act comp)
   "Announce viewport display."
@@ -1229,8 +1289,8 @@ resulting configuration after the change."
     (agent-shell-other-buffer after)
     (agent-shell-interrupt after)
     (agent-shell--update-fragment around)
-    (agent-shell-next-item after)
-    (agent-shell-previous-item after)
+    (agent-shell-next-item around)
+    (agent-shell-previous-item around)
     (agent-shell-jump-to-latest-permission-button-row after)
     (agent-shell-next-permission-button after)
     (agent-shell-previous-permission-button after)
@@ -1238,8 +1298,8 @@ resulting configuration after the change."
     (agent-shell-set-session-mode after)
     (agent-shell-cycle-session-mode after)
     (agent-shell-viewport--show-buffer after)
-    (agent-shell-viewport-next-item after)
-    (agent-shell-viewport-previous-item after)
+    (agent-shell-viewport-next-item around)
+    (agent-shell-viewport-previous-item around)
     (agent-shell-prompt-compose after)
     (agent-shell-viewport-refresh after)
     (agent-shell-viewport-compose-send after)
