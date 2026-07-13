@@ -66,9 +66,10 @@ agent-shell Markdown table:
 - `M-Up` and `M-Down` leave directly before or after the table.  Up at the
   first logical row and Down at the last row provide the same exit behavior.
 
-Sequential discovery of tables embedded inside response blocks and clean
-`TAB`/`Shift-TAB` exit at the first and last cells remain the next navigation
-slice.
+`TAB` and `Shift-TAB` make every visible table embedded inside a response a
+navigation stop, including multiple tables in the same response.  Moving
+forward from the final cell or backward from the first cell leaves the table
+and speaks the adjacent content instead of reporting that no cells remain.
 
 ## Findings
 

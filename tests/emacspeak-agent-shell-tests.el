@@ -54,6 +54,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--lifecycle-event-setup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--markdown-table-region-at-point
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-button-feedback
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-event-cleanup
@@ -78,6 +80,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--table-navigation-setup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-between
+                  "emacspeak-agent-shell" (origin destination direction))
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
@@ -183,28 +187,42 @@ ENTRIES is an alist of qualified block IDs to body strings."
      ,@body))
 
 (defun emacspeak-agent-shell-test--table-entry (command mode direction)
-  "Run table entry COMMAND in MODE and return events plus target character.
-DIRECTION is `forward' or `backward'."
+  "Navigate with COMMAND in MODE across a real block containing a table.
+Return speech events plus the target character.  DIRECTION is `forward' or
+`backward'."
   (with-temp-buffer
-    (insert "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter")
+    (let ((response-start (point))
+          response-end next-start)
+      (insert "thinking\nbefore\n| A | B |\n|---|---|\n| 1 | 2 |\nafter\n")
+      (setq response-end (point))
+      (insert "\n")
+      (setq next-start (point))
+      (insert "next item\n")
+      (put-text-property
+       response-start response-end 'agent-shell-ui-state
+       '((:qualified-id . "response") (:navigatable . t)))
+      (put-text-property
+       next-start (point-max) 'agent-shell-ui-state
+       '((:qualified-id . "next") (:navigatable . t))))
     (agent-shell-markdown-replace-markup)
     (goto-char (point-min))
-    (let ((table-start
-           (next-single-property-change
-            (point) 'agent-shell-markdown-table-source nil (point-max)))
-          (emacspeak-agent-shell-table-titles '(column))
+    (let ((emacspeak-agent-shell-table-titles '(column))
           (emacspeak-agent-shell-table-data-position 'first))
       (setq major-mode mode)
-      (goto-char (if (eq direction 'forward) (point-min) (point-max)))
+      (if (eq direction 'forward)
+          (goto-char (point-min))
+        (goto-char (point-min))
+        (search-forward "next item")
+        (backward-char (length "next item")))
       (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t))
                 ((symbol-function 'comint-next-prompt) (lambda (&rest _) nil))
-                ((symbol-function 'agent-shell-ui-forward-block)
-                 (lambda () table-start))
-                ((symbol-function 'agent-shell-ui-backward-block)
-                 (lambda () table-start))
                 ((symbol-function 'agent-shell-next-permission-button)
                  (lambda () nil))
                 ((symbol-function 'agent-shell-previous-permission-button)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-viewport--prompt-start)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-viewport--response-start)
                  (lambda () nil)))
         (let ((events
                (emacspeak-agent-shell-test--capture-events
@@ -1101,7 +1119,7 @@ DIRECTION is `forward' or `backward'."
         :type 'user-error)))))
 
 (ert-deftest emacspeak-agent-shell-table-entry-is-directional-in-both-views ()
-  "Table entry should target first/last cells in shell and viewport modes."
+  "Real item navigation should find embedded tables in both directions."
   (dolist (case
            `((agent-shell-next-item
               agent-shell-mode forward
@@ -1128,6 +1146,68 @@ DIRECTION is `forward' or `backward'."
       (emacspeak-agent-shell-test--table-entry
        (nth 0 case) (nth 1 case) (nth 2 case))
       (list (nth 3 case) (nth 4 case))))))
+
+(ert-deftest emacspeak-agent-shell-table-discovery-selects-nearest-visible ()
+  "Discovery should visit multiple tables in order and ignore hidden tables."
+  (emacspeak-agent-shell-test--with-rendered-table
+      (concat "before\n| A |\n|---|\n| 1 |\nbetween\n"
+              "| B |\n|---|\n| 2 |\nafter\n")
+    (let* ((first
+            (next-single-property-change
+             (point-min) 'agent-shell-markdown-table-source nil (point-max)))
+           (first-region
+            (progn
+              (goto-char first)
+              (emacspeak-agent-shell--markdown-table-region-at-point)))
+           (second
+            (next-single-property-change
+             (cdr first-region)
+             'agent-shell-markdown-table-source nil (point-max))))
+      (should
+       (= first
+          (emacspeak-agent-shell--table-between
+           (point-min) (point-max) 'forward)))
+      (should
+       (equal
+        (get-text-property
+         (emacspeak-agent-shell--table-between
+          (point-max) (point-min) 'backward)
+         'agent-shell-markdown-table-source)
+        "| B |\n|---|\n| 2 |"))
+      (put-text-property (car first-region) (cdr first-region) 'invisible t)
+      (should
+       (= second
+          (emacspeak-agent-shell--table-between
+           (point-min) (point-max) 'forward))))))
+
+(ert-deftest emacspeak-agent-shell-table-sequential-boundaries-exit ()
+  "Sequential table commands should leave at either edge in both views."
+  (dolist (case
+           '((agent-shell-next-item agent-shell-mode "2"
+              ((icon close-object) (speak "After table. after")) "after")
+             (agent-shell-previous-item agent-shell-mode "A"
+              ((icon close-object) (speak "Before table. before")) "before")
+             (agent-shell-viewport-next-item
+              agent-shell-viewport-view-mode "2"
+              ((icon close-object) (speak "After table. after")) "after")
+             (agent-shell-viewport-previous-item
+              agent-shell-viewport-view-mode "A"
+              ((icon close-object) (speak "Before table. before")) "before")))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter\n"
+      (goto-char (point-min))
+      (search-forward (nth 2 case))
+      (backward-char (length (nth 2 case)))
+      (setq major-mode (nth 1 case))
+      (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively (nth 0 case)))
+          (nth 3 case))))
+      (should (looking-at (nth 4 case)))
+      (should-not
+       (get-text-property (point) 'agent-shell-markdown-table-source)))))
 
 (ert-deftest emacspeak-agent-shell-table-row-speech-respects-title-settings ()
   "Logical row speech should announce a row title once and format each cell."
@@ -1467,12 +1547,15 @@ DIRECTION is `forward' or `backward'."
         '((icon item) (speak "world, hello.")))))))
 
 (ert-deftest emacspeak-agent-shell-table-navigation-speaks-in-both-views ()
-  "Shell and viewport table navigation should share semantic feedback."
+  "Shell and viewport table traversal should share semantic feedback."
   (let ((emacspeak-agent-shell-table-titles '(column))
         (emacspeak-agent-shell-table-data-position 'first))
     (emacspeak-agent-shell-test--with-rendered-table
-        "| A | B |\n|---|---|\n| 1 | 2 |\n"
+        "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter\n"
       (goto-char (point-min))
+      (goto-char
+       (next-single-property-change
+        (point) 'agent-shell-markdown-table-source nil (point-max)))
       (search-forward "B")
       (backward-char)
       (setq major-mode 'agent-shell-mode)
@@ -1492,11 +1575,11 @@ DIRECTION is `forward' or `backward'."
         '((icon item) (speak "1, A."))))
       (search-forward "2")
       (backward-char)
-      (should-not
-       (emacspeak-agent-shell-test--capture-events
-         (should-error
-          (call-interactively #'agent-shell-viewport-next-item)
-          :type 'user-error))))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'agent-shell-viewport-next-item))
+        '((icon close-object) (speak "After table. after")))))))
 
 (ert-deftest emacspeak-agent-shell-unknown-block-uses-fallback ()
   "Unknown non-empty content should reach the fallback speaker."

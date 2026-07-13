@@ -1311,33 +1311,105 @@ resulting configuration after the change."
                (if key (format " or %s" key) "")))
       t)))
 
+(defun emacspeak-agent-shell--table-sequential-edge-p (direction)
+  "Return non-nil at the table edge in sequential DIRECTION."
+  (when-let* ((cell (emacspeak-agent-shell--markdown-table-cell-at-point))
+              (rows (plist-get cell :rows)))
+    (let* ((row (plist-get cell :row-index))
+           (column (plist-get cell :column-index))
+           (index (+ column
+                     (apply #'+
+                            (mapcar #'length (seq-take rows row)))))
+           (count (apply #'+ (mapcar #'length rows))))
+      (if (eq direction 'forward)
+          (= index (1- count))
+        (zerop index)))))
+
+(defun emacspeak-agent-shell--table-between (origin destination direction)
+  "Return a visible table position between ORIGIN and DESTINATION.
+Search in DIRECTION.  When item navigation did not move, extend the search to
+the corresponding buffer boundary."
+  (let ((property 'agent-shell-markdown-table-source)
+        found)
+    (save-excursion
+      (pcase direction
+        ('forward
+         (let ((limit (if (> destination origin) destination (point-max)))
+               (position origin))
+           (while (and (< position limit) (not found))
+             (setq position
+                   (next-single-property-change
+                    position property nil limit))
+             (when (and (< position limit)
+                        (get-text-property position property)
+                        (not (invisible-p position)))
+               (setq found position)))))
+        ('backward
+         (let ((limit (if (< destination origin) destination (point-min)))
+               (position origin))
+           (while (and (> position limit) (not found))
+             (setq position
+                   (previous-single-property-change
+                    position property nil limit))
+             (let ((candidate (max limit (1- position))))
+               (when (and (> position limit)
+                          (get-text-property candidate property)
+                          (not (invisible-p candidate)))
+                 (setq found candidate)))))))
+      found)))
+
+(defun emacspeak-agent-shell--table-discovery-feedback
+    (origin direction)
+  "Stop at and announce a table skipped from ORIGIN in DIRECTION."
+  (let ((destination (point)))
+    (when-let ((table-position
+                (if (get-text-property
+                     destination 'agent-shell-markdown-table-source)
+                    destination
+                  (emacspeak-agent-shell--table-between
+                   origin destination direction))))
+      (goto-char table-position)
+      (emacspeak-agent-shell--table-entry-feedback direction))))
+
 (defadvice agent-shell-next-item (around emacspeak pre act comp)
-  "Speak the item at point after navigation, including table entry."
+  "Discover, enter, traverse, and leave rendered tables semantically."
   (let ((interactive-p (ems-interactive-p))
+        (origin (point))
         (started-in-table-p
-         (get-text-property (point) 'agent-shell-markdown-table-source)))
-    ad-do-it
-    (when interactive-p
+         (get-text-property (point) 'agent-shell-markdown-table-source))
+        handled-p)
+    (if (and interactive-p started-in-table-p
+             (emacspeak-agent-shell--table-sequential-edge-p 'forward))
+        (progn
+          (setq handled-p t)
+          (emacspeak-agent-shell--table-exit 'forward))
+      ad-do-it)
+    (when (and interactive-p (not handled-p))
       (unless (or (and (not started-in-table-p)
-                       (get-text-property
-                        (point) 'agent-shell-markdown-table-source)
-                       (emacspeak-agent-shell--table-entry-feedback 'forward))
+                       (emacspeak-agent-shell--table-discovery-feedback
+                        origin 'forward))
                   (emacspeak-agent-shell--permission-button-feedback)
                   (emacspeak-agent-shell--table-cell-feedback))
         (emacspeak-icon 'item)
         (emacspeak-speak-line)))))
 
 (defadvice agent-shell-previous-item (around emacspeak pre act comp)
-  "Speak the item at point after navigation, including table entry."
+  "Discover, enter, traverse, and leave rendered tables semantically."
   (let ((interactive-p (ems-interactive-p))
+        (origin (point))
         (started-in-table-p
-         (get-text-property (point) 'agent-shell-markdown-table-source)))
-    ad-do-it
-    (when interactive-p
+         (get-text-property (point) 'agent-shell-markdown-table-source))
+        handled-p)
+    (if (and interactive-p started-in-table-p
+             (emacspeak-agent-shell--table-sequential-edge-p 'backward))
+        (progn
+          (setq handled-p t)
+          (emacspeak-agent-shell--table-exit 'backward))
+      ad-do-it)
+    (when (and interactive-p (not handled-p))
       (unless (or (and (not started-in-table-p)
-                       (get-text-property
-                        (point) 'agent-shell-markdown-table-source)
-                       (emacspeak-agent-shell--table-entry-feedback 'backward))
+                       (emacspeak-agent-shell--table-discovery-feedback
+                        origin 'backward))
                   (emacspeak-agent-shell--permission-button-feedback)
                   (emacspeak-agent-shell--table-cell-feedback))
         (emacspeak-icon 'item)
@@ -1381,29 +1453,41 @@ resulting configuration after the change."
 ;;;  Viewport Mode Integration
 
 (defadvice agent-shell-viewport-next-item (around emacspeak pre act comp)
-  "Speak semantic table movement and entry in the viewport."
+  "Discover, enter, traverse, and leave tables in the viewport."
   (let ((interactive-p (ems-interactive-p))
+        (origin (point))
         (started-in-table-p
-         (get-text-property (point) 'agent-shell-markdown-table-source)))
-    ad-do-it
-    (when interactive-p
+         (get-text-property (point) 'agent-shell-markdown-table-source))
+        handled-p)
+    (if (and interactive-p started-in-table-p
+             (emacspeak-agent-shell--table-sequential-edge-p 'forward))
+        (progn
+          (setq handled-p t)
+          (emacspeak-agent-shell--table-exit 'forward))
+      ad-do-it)
+    (when (and interactive-p (not handled-p))
       (or (and (not started-in-table-p)
-               (get-text-property
-                (point) 'agent-shell-markdown-table-source)
-               (emacspeak-agent-shell--table-entry-feedback 'forward))
+               (emacspeak-agent-shell--table-discovery-feedback
+                origin 'forward))
           (emacspeak-agent-shell--table-cell-feedback)))))
 
 (defadvice agent-shell-viewport-previous-item (around emacspeak pre act comp)
-  "Speak semantic table movement and entry in the viewport."
+  "Discover, enter, traverse, and leave tables in the viewport."
   (let ((interactive-p (ems-interactive-p))
+        (origin (point))
         (started-in-table-p
-         (get-text-property (point) 'agent-shell-markdown-table-source)))
-    ad-do-it
-    (when interactive-p
+         (get-text-property (point) 'agent-shell-markdown-table-source))
+        handled-p)
+    (if (and interactive-p started-in-table-p
+             (emacspeak-agent-shell--table-sequential-edge-p 'backward))
+        (progn
+          (setq handled-p t)
+          (emacspeak-agent-shell--table-exit 'backward))
+      ad-do-it)
+    (when (and interactive-p (not handled-p))
       (or (and (not started-in-table-p)
-               (get-text-property
-                (point) 'agent-shell-markdown-table-source)
-               (emacspeak-agent-shell--table-entry-feedback 'backward))
+               (emacspeak-agent-shell--table-discovery-feedback
+                origin 'backward))
           (emacspeak-agent-shell--table-cell-feedback)))))
 
 (defadvice agent-shell-viewport--show-buffer (after emacspeak pre act comp)
