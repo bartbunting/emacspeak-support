@@ -71,6 +71,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-select-speaking-method
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-copy-cell
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-column
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-context
@@ -1174,6 +1176,47 @@ DIRECTION is `forward' or `backward'."
       (should-not
        (emacspeak-agent-shell-test--capture-events
          (should-error (call-interactively command) :type 'user-error))))))
+
+(ert-deftest emacspeak-agent-shell-table-copy-cell-copies-logical-value ()
+  "Cell copying should omit visual structure and text properties."
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| Name | Value |\n|---|---|\n| Alice | `a|b` |\n"
+      (goto-char (point-min))
+      (search-forward "Alice")
+      (agent-shell-markdown-table-next-cell)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-copy-cell))
+        '((icon save-object) (speak "Copied table cell."))))
+      (should (equal (car kill-ring) "a|b"))
+      (should-not (text-properties-at 0 (car kill-ring))))))
+
+(ert-deftest emacspeak-agent-shell-table-copy-cell-handles-blank-and-outside ()
+  "Cell copying should preserve blanks and remain silent outside tables."
+  (let ((kill-ring '("existing"))
+        (kill-ring-yank-pointer nil))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| Name | Value |\n|---|---|\n| Alice |  |\n"
+      (goto-char (point-min))
+      (search-forward "Alice")
+      (agent-shell-markdown-table-next-cell)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-copy-cell))
+        '((icon save-object) (speak "Copied table cell."))))
+      (should (equal (car kill-ring) "")))
+    (with-temp-buffer
+      (insert "outside")
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (should-error
+          (call-interactively #'emacspeak-agent-shell-table-copy-cell)
+          :type 'user-error)))
+      (should (equal (car kill-ring) "")))))
 
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."

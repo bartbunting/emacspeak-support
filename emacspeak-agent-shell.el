@@ -956,6 +956,22 @@ Markdown renderer."
         (dtk-speak (emacspeak-agent-shell--table-column-speech cell)))
     (user-error "Not in a rendered Markdown table")))
 
+;; Agent-shell does not currently expose a current-cell value or copy command.
+;; Prefer speech-enabling that command if agent-shell adds one in the future.
+(defun emacspeak-agent-shell-table-copy-cell ()
+  "Copy the logical Markdown table cell at point to the kill ring.
+Remove renderer padding, borders, and text properties.  Preserve the complete
+logical value of a wrapped cell."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (let ((data
+             (substring-no-properties
+              (string-trim (or (plist-get cell :data) "")))))
+        (kill-new data)
+        (emacspeak-icon 'save-object)
+        (dtk-speak "Copied table cell."))
+    (user-error "Not in a rendered Markdown table")))
+
 (defun emacspeak-agent-shell--table-settings-speech ()
   "Return a complete spoken summary of the table speech settings."
   (format "Table speech: %s; column titles %s; row titles %s."

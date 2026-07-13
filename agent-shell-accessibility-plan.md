@@ -39,7 +39,8 @@ Completed so far:
   with configurable row/column titles, data-first or title-first order, and
   an interactive speech-method selector plus manual position/dimension
   context, directional table-entry announcements, and logical whole-row and
-  whole-column reading; and
+  whole-column reading, plus logical cell copying without rendered padding or
+  borders; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
@@ -89,6 +90,9 @@ remaining compatibility failures are still open Phase 0/1 work.
   generic Emacspeak header.
 - Every shell can autospeak, so concurrent background agents lack a clear
   announcement policy or buffer identity.
+- Agent-shell does not currently provide a current-table-cell value or copy
+  command.  The local logical-cell copy command should be replaced by advice
+  that adds speech feedback if agent-shell gains a native command.
 
 ### Features With Little or No Semantic Support
 
@@ -98,8 +102,8 @@ remaining compatibility failures are still open Phase 0/1 work.
 - grouped tool calls, status transitions, tool diffs, and failures;
 - fragment summary/body navigation, fold state, and fold-all commands;
 - Markdown headings, links, inline/source code, and blockquotes;
-- table search, filtered row/column reading, and cell copying beyond the
-  implemented table entry, navigation, context, and whole-row/column speech;
+- table search and filtered row/column reading beyond the implemented table
+  entry, navigation, context, whole-row/column speech, and cell copying;
 - viewport item/page navigation, compose/cancel/peek, replies, history, and
   prompt queue management;
 - exact model, session-mode, thought-level, and config-option values;
