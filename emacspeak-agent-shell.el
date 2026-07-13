@@ -121,6 +121,22 @@ cues."
   :type 'symbol
   :group 'emacspeak-agent-shell)
 
+(defcustom emacspeak-agent-shell-table-titles '(column)
+  "Table titles spoken with the current Markdown table cell.
+Column titles come from the first row when the Markdown source has a
+separator row.  Row titles come from the first column, following
+Emacspeak's table convention.  Customize this set to enable either,
+both, or neither kind of title."
+  :type '(set (const :tag "Column titles" column)
+              (const :tag "Row titles" row))
+  :group 'emacspeak-agent-shell)
+
+(defcustom emacspeak-agent-shell-table-data-position 'first
+  "Whether table cell data is spoken before or after its titles."
+  :type '(choice (const :tag "Data before titles" first)
+                 (const :tag "Titles before data" last))
+  :group 'emacspeak-agent-shell)
+
 ;;;  Speech Setup
 
 ;;;###autoload
@@ -653,6 +669,155 @@ and speak them after streaming pauses for a brief period."
 
 ;;;  Navigation Commands
 
+(defun emacspeak-agent-shell--markdown-table-separator-p (row)
+  "Return non-nil if Markdown table ROW is a separator row."
+  (string-match-p "\\`[ \t]*|[-:| \t]+|[ \t]*\\'" row))
+
+(defun emacspeak-agent-shell--markdown-table-parse-row (row)
+  "Return the logical cells parsed from Markdown table ROW.
+Preserve cell text properties and ignore pipes protected by agent-shell's
+Markdown renderer."
+  (let ((length (length row))
+        (position 0)
+        cells
+        ended-with-separator)
+    (while (and (< position length)
+                (memq (aref row position) '(?\s ?\t)))
+      (setq position (1+ position)))
+    (when (and (< position length) (eq (aref row position) ?|))
+      (setq position (1+ position)))
+    (let ((cell-start position))
+      (while (< position length)
+        (let ((character (aref row position)))
+          (cond
+           ((and (eq character ?|)
+                 (not (get-text-property
+                       position 'agent-shell-markdown-frozen row)))
+            (push (string-trim (substring row cell-start position)) cells)
+            (setq position (1+ position)
+                  cell-start position
+                  ended-with-separator t))
+           ((eq character ?\\)
+            (setq position (min length (+ position 2))
+                  ended-with-separator nil))
+           (t
+            (unless (memq character '(?\s ?\t))
+              (setq ended-with-separator nil))
+            (setq position (1+ position))))))
+      (unless ended-with-separator
+        (push (string-trim (substring row cell-start length)) cells))
+    (nreverse cells))))
+
+(defun emacspeak-agent-shell--markdown-table-rows (source)
+  "Parse Markdown table SOURCE into rows and separator metadata."
+  (let (rows separator-p)
+    (dolist (line (split-string source "\n"))
+      (unless (string-empty-p (string-trim line))
+        (if (emacspeak-agent-shell--markdown-table-separator-p line)
+            (setq separator-p t)
+          (push (emacspeak-agent-shell--markdown-table-parse-row line)
+                rows))))
+    (list :rows (nreverse rows) :column-titles-p separator-p)))
+
+(defun emacspeak-agent-shell--markdown-table-region-at-point ()
+  "Return the rendered Markdown table region at point, or nil."
+  (when (get-text-property (point) 'agent-shell-markdown-table-source)
+    (cons
+     (or (previous-single-property-change
+          (min (1+ (point)) (point-max))
+          'agent-shell-markdown-table-source nil (point-min))
+         (point-min))
+     (or (next-single-property-change
+          (point) 'agent-shell-markdown-table-source nil (point-max))
+         (point-max)))))
+
+(defun emacspeak-agent-shell--markdown-table-cell-starts (region)
+  "Return navigable cell positions in rendered Markdown table REGION."
+  (let (positions)
+    (save-excursion
+      (save-restriction
+        (narrow-to-region (car region) (cdr region))
+        (goto-char (point-min))
+        (while-let ((match (text-property-search-forward
+                            'agent-shell-markdown-table-cell-start t t)))
+          (push (prop-match-beginning match) positions))))
+    (nreverse positions)))
+
+(defun emacspeak-agent-shell--markdown-table-cell-at-point ()
+  "Return semantic Markdown table cell data for point, or nil."
+  (when-let* ((source (get-text-property
+                       (point) 'agent-shell-markdown-table-source))
+              (region (emacspeak-agent-shell--markdown-table-region-at-point))
+              (starts
+               (emacspeak-agent-shell--markdown-table-cell-starts region)))
+    (let ((cell-index -1)
+          (index 0))
+      (dolist (start starts)
+        (when (<= start (point))
+          (setq cell-index index))
+        (setq index (1+ index)))
+      (when (>= cell-index 0)
+        (let* ((parsed (emacspeak-agent-shell--markdown-table-rows source))
+               (rows (plist-get parsed :rows))
+               (column-titles-p (plist-get parsed :column-titles-p))
+               (remaining cell-index)
+               (row-index 0)
+               current-row
+               column-index)
+          (while (and rows (not current-row))
+            (if (< remaining (length (car rows)))
+                (setq current-row (car rows)
+                      column-index remaining)
+              (setq remaining (- remaining (length (car rows)))
+                    rows (cdr rows)
+                    row-index (1+ row-index))))
+          (when current-row
+            (let ((all-rows (plist-get parsed :rows)))
+              (list
+               :data (nth column-index current-row)
+               :column-title
+               (when column-titles-p
+                 (nth column-index (car all-rows)))
+               :row-title
+               (unless (and column-titles-p (zerop row-index))
+                 (car current-row))))))))))
+
+(defun emacspeak-agent-shell--table-title (title face data)
+  "Return TITLE voiced with FACE unless it is blank or duplicates DATA."
+  (when-let* ((title (and title (string-trim title)))
+              ((not (string-empty-p title)))
+              ((not (string= (substring-no-properties title)
+                             (substring-no-properties data)))))
+    (setq title (copy-sequence title))
+    (add-face-text-property 0 (length title) face t title)
+    title))
+
+(defun emacspeak-agent-shell--table-cell-speech (cell)
+  "Format semantic table CELL according to the table speech options."
+  (let* ((raw-data (or (plist-get cell :data) ""))
+         (data (string-trim raw-data))
+         (data (if (string-empty-p data) "blank" data))
+         (row-title
+          (when (memq 'row emacspeak-agent-shell-table-titles)
+            (emacspeak-agent-shell--table-title
+             (plist-get cell :row-title) 'italic data)))
+         (column-title
+          (when (memq 'column emacspeak-agent-shell-table-titles)
+            (emacspeak-agent-shell--table-title
+             (plist-get cell :column-title) 'bold data)))
+         (titles (delq nil (list row-title column-title)))
+         (parts (if (eq emacspeak-agent-shell-table-data-position 'first)
+                    (cons data titles)
+                  (append titles (list data)))))
+    (concat (mapconcat #'identity parts ", ") ".")))
+
+(defun emacspeak-agent-shell--table-cell-feedback ()
+  "Speak the rendered Markdown table cell at point semantically."
+  (when-let* ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+    (emacspeak-icon 'item)
+    (dtk-speak (emacspeak-agent-shell--table-cell-speech cell))
+    t))
+
 (defun emacspeak-agent-shell--permission-button-text-at-point ()
   "Return the visible permission button text at point, without decoration."
   (when (get-text-property (point) 'agent-shell-permission-button)
@@ -710,14 +875,16 @@ and speak them after streaming pauses for a brief period."
 (defadvice agent-shell-next-item (after emacspeak pre act comp)
   "Speak the item at point after navigation."
   (when (ems-interactive-p)
-    (unless (emacspeak-agent-shell--permission-button-feedback)
+    (unless (or (emacspeak-agent-shell--permission-button-feedback)
+                (emacspeak-agent-shell--table-cell-feedback))
       (emacspeak-icon 'item)
       (emacspeak-speak-line))))
 
 (defadvice agent-shell-previous-item (after emacspeak pre act comp)
   "Speak the item at point after navigation."
   (when (ems-interactive-p)
-    (unless (emacspeak-agent-shell--permission-button-feedback)
+    (unless (or (emacspeak-agent-shell--permission-button-feedback)
+                (emacspeak-agent-shell--table-cell-feedback))
       (emacspeak-icon 'item)
       (emacspeak-speak-line))))
 
@@ -757,6 +924,16 @@ and speak them after streaming pauses for a brief period."
     (emacspeak-speak-line)))
 
 ;;;  Viewport Mode Integration
+
+(defadvice agent-shell-viewport-next-item (after emacspeak pre act comp)
+  "Speak the semantic table cell reached in the viewport."
+  (when (ems-interactive-p)
+    (emacspeak-agent-shell--table-cell-feedback)))
+
+(defadvice agent-shell-viewport-previous-item (after emacspeak pre act comp)
+  "Speak the semantic table cell reached in the viewport."
+  (when (ems-interactive-p)
+    (emacspeak-agent-shell--table-cell-feedback)))
 
 (defadvice agent-shell-viewport--show-buffer (after emacspeak pre act comp)
   "Announce viewport display."
@@ -989,6 +1166,8 @@ and speak them after streaming pauses for a brief period."
     (agent-shell-set-session-mode after)
     (agent-shell-cycle-session-mode after)
     (agent-shell-viewport--show-buffer after)
+    (agent-shell-viewport-next-item after)
+    (agent-shell-viewport-previous-item after)
     (agent-shell-prompt-compose after)
     (agent-shell-viewport-refresh after)
     (agent-shell-viewport-compose-send after)

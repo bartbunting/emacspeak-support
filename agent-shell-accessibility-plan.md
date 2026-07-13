@@ -34,7 +34,9 @@ Completed so far:
 - public tool-call status feedback with per-tool transition deduplication and
   icon-only, summary, and full-output verbosity;
 - current viewport compose submission and accepted-cancellation feedback,
-  including suppression of false success and declined-cancellation cues; and
+  including suppression of false success and declined-cancellation cues;
+- semantic Markdown table-cell feedback in shell and viewport navigation,
+  with configurable row/column titles and data-first or title-first order; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
@@ -92,8 +94,9 @@ remaining compatibility failures are still open Phase 0/1 work.
   lifecycle events;
 - grouped tool calls, status transitions, tool diffs, and failures;
 - fragment summary/body navigation, fold state, and fold-all commands;
-- Markdown headings, links, inline/source code, blockquotes, and tables;
-- table cell position and column/header context;
+- Markdown headings, links, inline/source code, and blockquotes;
+- table entry, dimension, and coordinate summaries beyond the implemented
+  cell navigation and configurable row/column title context;
 - viewport item/page navigation, compose/cancel/peek, replies, history, and
   prompt queue management;
 - exact model, session-mode, thought-level, and config-option values;

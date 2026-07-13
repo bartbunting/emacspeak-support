@@ -27,6 +27,8 @@
 (defvar emacspeak-agent-shell-signal-processing)
 (defvar emacspeak-agent-shell-speak-permissions)
 (defvar emacspeak-agent-shell-speak-tool-calls)
+(defvar emacspeak-agent-shell-table-data-position)
+(defvar emacspeak-agent-shell-table-titles)
 (defvar emacspeak-agent-shell-tool-output-verbosity)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
@@ -61,6 +63,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--tool-call-event-setup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-cell-feedback
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
@@ -70,6 +74,8 @@
                   "agent-shell" (&rest arguments))
 (declare-function agent-shell--save-tool-call
                   "agent-shell" (state tool-call-id tool-call))
+(declare-function agent-shell-markdown-replace-markup
+                  "agent-shell-markdown" (&rest arguments))
 
 (defconst emacspeak-agent-shell-test--agent-shell-directory
   (file-name-as-directory
@@ -128,6 +134,14 @@ ENTRIES is an alist of qualified block IDs to body strings."
     (unless (file-readable-p path)
       (ert-fail (format "Unreadable agent-shell fixture: %s" path)))
     path))
+
+(defmacro emacspeak-agent-shell-test--with-rendered-table (source &rest body)
+  "Render Markdown table SOURCE in a temporary buffer, then run BODY."
+  (declare (indent 1) (debug t))
+  `(with-temp-buffer
+     (insert ,source)
+     (agent-shell-markdown-replace-markup)
+     ,@body))
 
 (defun emacspeak-agent-shell-test--read-traffic (filename)
   "Read agent-shell traffic fixture FILENAME as Lisp data."
@@ -887,6 +901,123 @@ ENTRIES is an alist of qualified block IDs to body strings."
         (call-interactively #'agent-shell-previous-permission-button))
       '((icon item)
         (speak "Reject, choice 2 of 3. Press Return or n."))))))
+
+(ert-deftest emacspeak-agent-shell-table-cell-feedback-is-customizable ()
+  "Table feedback should support every title set and both orderings."
+  (emacspeak-agent-shell-test--with-rendered-table
+      "| Name | Role |\n|---|---|\n| Alice | Engineer |\n"
+    (goto-char (point-min))
+    (search-forward "Engineer")
+    (backward-char (length "Engineer"))
+    (dolist (case '(((column) first "Engineer, Role.")
+                    ((row) first "Engineer, Alice.")
+                    ((column row) first "Engineer, Alice, Role.")
+                    (nil first "Engineer.")
+                    ((column row) last "Alice, Role, Engineer.")))
+      (let ((emacspeak-agent-shell-table-titles (nth 0 case))
+            (emacspeak-agent-shell-table-data-position (nth 1 case)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell--table-cell-feedback))
+          `((icon item) (speak ,(nth 2 case)))))))))
+
+(ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
+  "Table feedback should avoid duplicate titles and name blank data."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| Name | Role |\n|---|---|\n| Alice |  |\n"
+      (goto-char (point-min))
+      (search-forward "Role")
+      (backward-char (length "Role"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--table-cell-feedback))
+        '((icon item) (speak "Role."))))
+      (search-forward "Alice")
+      (backward-char (length "Alice"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--table-cell-feedback))
+        '((icon item) (speak "Alice, Name."))))
+      (agent-shell-markdown-table-next-cell)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--table-cell-feedback))
+        '((icon item) (speak "blank, Alice, Role.")))))))
+
+(ert-deftest emacspeak-agent-shell-table-feedback-preserves-logical-cells ()
+  "Table feedback should speak wrapped cells and protected pipes in full."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first)
+        (agent-shell-markdown-table-max-width-fraction 1.0))
+    (cl-letf (((symbol-function 'agent-shell-markdown--display-width)
+               (lambda () 35)))
+      (emacspeak-agent-shell-test--with-rendered-table
+          (concat "| Code | Notes |\n"
+                  "|---|---|\n"
+                  "| `a|b` | owns a long wrapped description |\n")
+        (goto-char (point-min))
+        (search-forward "owns a long")
+        (backward-char (length "owns a long"))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell--table-cell-feedback))
+          '((icon item)
+            (speak
+             "owns a long wrapped description, a|b, Notes."))))))))
+
+(ert-deftest emacspeak-agent-shell-table-feedback-respects-headerless-tables ()
+  "A table without a separator should not invent column titles."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| hello | world |\n| goodbye | moon |\n"
+      (goto-char (point-min))
+      (search-forward "world")
+      (backward-char (length "world"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--table-cell-feedback))
+        '((icon item) (speak "world, hello.")))))))
+
+(ert-deftest emacspeak-agent-shell-table-navigation-speaks-in-both-views ()
+  "Shell and viewport table navigation should share semantic feedback."
+  (let ((emacspeak-agent-shell-table-titles '(column))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| A | B |\n|---|---|\n| 1 | 2 |\n"
+      (goto-char (point-min))
+      (search-forward "B")
+      (backward-char)
+      (setq major-mode 'agent-shell-mode)
+      (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'agent-shell-next-item))
+          '((icon item) (speak "1, A.")))))
+      (search-forward "2")
+      (backward-char)
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'agent-shell-viewport-previous-item))
+        '((icon item) (speak "1, A."))))
+      (search-forward "2")
+      (backward-char)
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (should-error
+          (call-interactively #'agent-shell-viewport-next-item)
+          :type 'user-error))))))
 
 (ert-deftest emacspeak-agent-shell-unknown-block-uses-fallback ()
   "Unknown non-empty content should reach the fallback speaker."
