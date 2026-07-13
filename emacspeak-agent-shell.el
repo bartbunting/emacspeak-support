@@ -477,7 +477,11 @@ selects the configured foreground or background level."
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c ]")
               #'emacspeak-agent-shell-next-block-of-type)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c [")
-              #'emacspeak-agent-shell-previous-block-of-type))
+              #'emacspeak-agent-shell-previous-block-of-type)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "]")
+              #'emacspeak-agent-shell-next-block-at-point)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "[")
+              #'emacspeak-agent-shell-previous-block-at-point))
 
 (emacspeak-agent-shell--install-speech-control-bindings)
 
@@ -1166,6 +1170,7 @@ keep that compatibility inference isolated here."
                        position next
                        'agent-shell-markdown-table-cell-start t)))
             (push (list :position cell
+                        :start position
                         :end next
                         :type 'table
                         :state
@@ -1249,8 +1254,10 @@ keep that compatibility inference isolated here."
         (delq nil (list fallback (plist-get location :fold-state))) ", ")
        "."))))
 
-(defun emacspeak-agent-shell--jump-block-of-type (type direction)
-  "Move to semantic block TYPE in DIRECTION and announce it."
+(defun emacspeak-agent-shell--jump-block-of-type
+    (type direction &optional origin)
+  "Move to semantic block TYPE in DIRECTION and announce it.
+Use ORIGIN instead of point as the navigation boundary when non-nil."
   (unless (derived-mode-p 'agent-shell-mode
                           'agent-shell-viewport-view-mode)
     (user-error "Not in an agent-shell transcript"))
@@ -1258,7 +1265,7 @@ keep that compatibility inference isolated here."
           (seq-filter
            (lambda (location) (eq (plist-get location :type) type))
            (emacspeak-agent-shell--block-locations)))
-         (origin (point))
+         (origin (or origin (point)))
          (target
           (if (eq direction 'forward)
               (seq-find
@@ -1291,6 +1298,57 @@ keep that compatibility inference isolated here."
                (downcase (emacspeak-agent-shell--block-type-label type))))
       nil)))
 
+(defun emacspeak-agent-shell--block-location-at-point (&optional position)
+  "Return the innermost semantic block containing POSITION or point.
+Rendered tables win ties with their enclosing transcript fragment."
+  (setq position (or position (point)))
+  (car
+   (sort
+    (seq-filter
+     (lambda (location)
+       (let ((start (or (plist-get location :start)
+                        (plist-get location :position)))
+             (end (plist-get location :end)))
+         (and start end (<= start position) (< position end))))
+     (emacspeak-agent-shell--block-locations))
+    (lambda (left right)
+      (let ((left-size
+             (- (plist-get left :end)
+                (or (plist-get left :start)
+                    (plist-get left :position))))
+            (right-size
+             (- (plist-get right :end)
+                (or (plist-get right :start)
+                    (plist-get right :position)))))
+        (or (< left-size right-size)
+            (and (= left-size right-size)
+                 (eq (plist-get left :type) 'table)
+                 (not (eq (plist-get right :type) 'table)))))))))
+
+(defun emacspeak-agent-shell--literal-character-input-p ()
+  "Return non-nil when this command key should insert at an editable prompt."
+  (and (integerp last-command-event)
+       (> (length (this-command-keys-vector)) 0)
+       (eq (key-binding (this-command-keys-vector)) this-command)
+       (or (derived-mode-p 'agent-shell-viewport-edit-mode)
+           (and (derived-mode-p 'agent-shell-mode)
+                (not (shell-maker-busy))
+                (shell-maker-point-at-last-prompt-p)))))
+
+(defun emacspeak-agent-shell--navigate-block-at-point (direction)
+  "Navigate in DIRECTION using the semantic block containing point."
+  (if (emacspeak-agent-shell--literal-character-input-p)
+      (self-insert-command 1)
+    (if-let* ((location (emacspeak-agent-shell--block-location-at-point))
+              (type (plist-get location :type)))
+        (progn
+          (setq emacspeak-agent-shell--block-navigation-type type)
+          (when (emacspeak-agent-shell--jump-block-of-type
+                 type direction (plist-get location :position))
+            (emacspeak-agent-shell--activate-block-repeat-map)))
+      (emacspeak-icon 'warn-user)
+      (dtk-speak "No semantic block at point."))))
+
 (defvar emacspeak-agent-shell--block-repeat-map
   (make-sparse-keymap)
   "Temporary map for repeating semantic block navigation.")
@@ -1321,6 +1379,18 @@ keep that compatibility inference isolated here."
   (when (emacspeak-agent-shell--jump-block-of-type
          (emacspeak-agent-shell--read-block-type) 'backward)
     (emacspeak-agent-shell--activate-block-repeat-map)))
+
+(defun emacspeak-agent-shell-next-block-at-point ()
+  "Move to the next block matching the semantic block at point.
+When invoked by `]' at an editable prompt, insert that character instead."
+  (interactive)
+  (emacspeak-agent-shell--navigate-block-at-point 'forward))
+
+(defun emacspeak-agent-shell-previous-block-at-point ()
+  "Move to the previous block matching the semantic block at point.
+When invoked by `[' at an editable prompt, insert that character instead."
+  (interactive)
+  (emacspeak-agent-shell--navigate-block-at-point 'backward))
 
 (defun emacspeak-agent-shell-repeat-next-block ()
   "Move to the next occurrence of the selected semantic block type."

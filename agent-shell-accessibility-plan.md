@@ -10,7 +10,8 @@ This plan covers `emacspeak-agent-shell.el` in this repository and its support
 for the current agent-shell interaction model.  The audit compared:
 
 - emacspeak-support at `da2f902`;
-- agent-shell `v0.58.1-15-g3695704`;
+- agent-shell `v0.59.1` (`14185ca`), rechecked before contextual block
+  navigation;
 - Emacspeak `60.0-490-g7482f8e27`; and
 - Emacs 30.2 for static and replay checks.  Final compatibility checks must
   also use the repository's documented minimum of Emacs 31.
@@ -68,6 +69,11 @@ bodyless groups retain concise label and fold-state feedback.  Selecting a
 tool inside a collapsed group expands the group before moving to the tool.
 Rendered tables are also selectable, but retain the less chatty table-entry
 announcement: dimensions and the entry cell rather than every cell.
+
+When no repeat map is active, bare `]` and `[` infer the innermost semantic
+block at point, then move to the next or previous block of that type.  A table
+nested in a response is treated as a table.  At the live shell prompt and in
+the viewport compose buffer, these keys continue to insert literal brackets.
 
 Agent-shell currently exposes generic next/previous block navigation but no
 public semantic block-type field.  The compatibility adapter therefore infers

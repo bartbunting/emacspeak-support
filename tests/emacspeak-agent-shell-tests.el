@@ -45,6 +45,7 @@
 (defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
 (defvar agent-shell-mode-map)
+(defvar agent-shell-viewport-edit-mode-map)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar agent-shell-viewport-view-mode-hook)
 
@@ -56,8 +57,10 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--block-locations
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--block-location-at-point
+                  "emacspeak-agent-shell" (&optional position))
 (declare-function emacspeak-agent-shell--jump-block-of-type
-                  "emacspeak-agent-shell" (type direction))
+                  "emacspeak-agent-shell" (type direction &optional origin))
 (declare-function emacspeak-agent-shell--buffer-setup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--handle-permission-request
@@ -86,7 +89,11 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-next-block-of-type
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-next-block-at-point
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-previous-block-of-type
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-previous-block-at-point
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-cycle-speech-level
                   "emacspeak-agent-shell" (&optional reset))
@@ -880,10 +887,14 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          (background-key (kbd "C-c C-S-q"))
          (next-block-key (kbd "C-c ]"))
          (previous-block-key (kbd "C-c ["))
+         (context-next-key (kbd "]"))
+         (context-previous-key (kbd "["))
          (saved-current (lookup-key map current-key))
          (saved-background (lookup-key map background-key))
          (saved-next-block (lookup-key map next-block-key))
-         (saved-previous-block (lookup-key map previous-block-key)))
+         (saved-previous-block (lookup-key map previous-block-key))
+         (saved-context-next (lookup-key map context-next-key))
+         (saved-context-previous (lookup-key map context-previous-key)))
     (unwind-protect
         (progn
           (define-key map current-key
@@ -891,6 +902,8 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (define-key map background-key nil)
           (define-key map next-block-key nil)
           (define-key map previous-block-key nil)
+          (define-key map context-next-key nil)
+          (define-key map context-previous-key nil)
           (emacspeak-agent-shell--install-speech-control-bindings)
           (should
            (eq (lookup-key map current-key)
@@ -903,11 +916,19 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                #'emacspeak-agent-shell-next-block-of-type))
           (should
            (eq (lookup-key map previous-block-key)
-               #'emacspeak-agent-shell-previous-block-of-type)))
+               #'emacspeak-agent-shell-previous-block-of-type))
+          (should
+           (eq (lookup-key map context-next-key)
+               #'emacspeak-agent-shell-next-block-at-point))
+          (should
+           (eq (lookup-key map context-previous-key)
+               #'emacspeak-agent-shell-previous-block-at-point)))
       (define-key map current-key saved-current)
       (define-key map background-key saved-background)
       (define-key map next-block-key saved-next-block)
-      (define-key map previous-block-key saved-previous-block))))
+      (define-key map previous-block-key saved-previous-block)
+      (define-key map context-next-key saved-context-next)
+      (define-key map context-previous-key saved-context-previous))))
 
 (ert-deftest emacspeak-agent-shell-speech-level-control-works-in-viewport ()
   "Viewport selectors should target the shell and remain active in tables."
@@ -935,6 +956,12 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should
              (eq (key-binding (kbd "C-c ["))
                  #'emacspeak-agent-shell-previous-block-of-type))
+            (should
+             (eq (key-binding (kbd "]"))
+                 #'emacspeak-agent-shell-next-block-at-point))
+            (should
+             (eq (key-binding (kbd "["))
+                 #'emacspeak-agent-shell-previous-block-at-point))
             (setq emacspeak-agent-shell--table-navigation-active t)
             (should
              (eq (key-binding (kbd "C-c C-q"))
@@ -1576,6 +1603,111 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (should
        (eq (lookup-key activated-map (kbd "["))
            #'emacspeak-agent-shell-repeat-previous-block)))))
+
+(ert-deftest emacspeak-agent-shell-context-navigation-infers-current-type ()
+  "Bare brackets should infer and skip the semantic block containing point."
+  (let ((emacspeak-agent-shell--block-navigation-type 'plan)
+        activated-map)
+    (emacspeak-agent-shell-test--with-semantic-blocks
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (goto-char (point-min))
+      (search-forward "second line")
+      (backward-char 3)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'set-transient-map)
+                     (lambda (map &rest _)
+                       (setq activated-map map))))
+            (emacspeak-agent-shell-next-block-at-point)))
+        '((stop nil)
+          (icon large-movement)
+          (speak "Second answer"))))
+      (should (eq emacspeak-agent-shell--block-navigation-type
+                  'agent-response))
+      (should (eq activated-map emacspeak-agent-shell--block-repeat-map))
+      (forward-char 3)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'set-transient-map) #'ignore))
+            (emacspeak-agent-shell-previous-block-at-point)))
+        '((stop nil)
+          (icon large-movement)
+          (speak "First answer\nwith a second line"))))
+      (forward-char 3)
+      (let ((origin (point)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell-previous-block-at-point))
+          '((icon warn-user)
+            (speak "No earlier agent response block."))))
+        (should (= (point) origin))))))
+
+(ert-deftest emacspeak-agent-shell-context-navigation-prefers-nested-table ()
+  "A rendered table should win over its enclosing response at point."
+  (let ((emacspeak-agent-shell-table-titles '(column))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        (concat "before\n"
+                "| A | B |\n|---|---|\n| 1 | 2 |\n"
+                "between\n"
+                "| C | D |\n|---|---|\n| 3 | 4 |\n"
+                "after\n")
+      (put-text-property
+       (point-min) (point-max) 'agent-shell-ui-state
+       '((:qualified-id . "1-agent_message_chunk")))
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (goto-char (point-min))
+      (search-forward "1")
+      (backward-char 1)
+      (should
+       (eq (plist-get (emacspeak-agent-shell--block-location-at-point) :type)
+           'table))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'set-transient-map) #'ignore))
+            (emacspeak-agent-shell-next-block-at-point)))
+        '((stop nil)
+          (icon open-object)
+          (speak "Table, 1 data row, 2 columns. C."))))
+      (should (eq emacspeak-agent-shell--block-navigation-type 'table)))))
+
+(ert-deftest emacspeak-agent-shell-context-navigation-preserves-input ()
+  "Contextual bracket keys should self-insert in both prompt editors."
+  (dolist (case `((agent-shell-mode ,agent-shell-mode-map "]")
+                  (agent-shell-viewport-edit-mode
+                   ,agent-shell-viewport-edit-mode-map "[")))
+    (let ((buffer (generate-new-buffer " *agent-shell-bracket-input-test*")))
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buffer)
+            (setq major-mode (nth 0 case))
+            (use-local-map (nth 1 case))
+            (setq emacspeak-agent-shell--speech-control-active t)
+            (cl-letf (((symbol-function 'shell-maker-busy) (lambda () nil))
+                      ((symbol-function 'shell-maker-point-at-last-prompt-p)
+                       (lambda () t)))
+              (execute-kbd-macro (kbd (nth 2 case))))
+            (should (equal (buffer-string) (nth 2 case))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest emacspeak-agent-shell-context-navigation-rejects-plain-text ()
+  "Contextual navigation should briefly identify unclassified transcript text."
+  (with-temp-buffer
+    (insert "Unclassified preamble")
+    (setq major-mode 'agent-shell-viewport-view-mode)
+    (goto-char (+ (point-min) 3))
+    (let ((last-command-event nil))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell-next-block-at-point))
+        '((icon warn-user)
+          (speak "No semantic block at point.")))))))
 
 (ert-deftest emacspeak-agent-shell-block-navigation-has-viewport-fallback ()
   "Plain viewport responses should remain typed navigation targets."
