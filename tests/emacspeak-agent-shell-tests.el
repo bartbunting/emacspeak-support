@@ -20,6 +20,9 @@
 (defvar emacspeak-agent-shell--permission-action-cache)
 (defvar emacspeak-agent-shell--permission-response-subscription)
 (defvar emacspeak-agent-shell--permission-subscription)
+(defvar emacspeak-agent-shell--pending-bodies)
+(defvar emacspeak-agent-shell--pending-speech-qualified-ids)
+(defvar emacspeak-agent-shell--pending-speech-timer)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
 (defvar emacspeak-agent-shell-background-speech-level)
@@ -73,6 +76,10 @@
                   "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell-cycle-speech-level
                   "emacspeak-agent-shell" (&optional reset))
+(declare-function emacspeak-agent-shell-select-background-speech-level
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-select-speech-level
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--speak-content
                   "emacspeak-agent-shell" (content block-type))
 (declare-function emacspeak-agent-shell--tool-call-block-handled-p
@@ -791,7 +798,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (kill-buffer buffer)))))
 
 (ert-deftest emacspeak-agent-shell-speech-level-control-works-in-viewport ()
-  "The viewport key should change the associated shell's speech override."
+  "Viewport selectors should target the shell and remain active in tables."
   (let ((shell (generate-new-buffer "Codex Agent @ viewport-level"))
         (viewport
          (generate-new-buffer "Codex Agent @ viewport-level [viewport]")))
@@ -806,18 +813,24 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should emacspeak-agent-shell--speech-control-active)
             (should
              (eq (key-binding (kbd "C-c C-q"))
-                 #'emacspeak-agent-shell-cycle-speech-level))
+                 #'emacspeak-agent-shell-select-speech-level))
+            (should
+             (eq (key-binding (kbd "C-c C-S-q"))
+                 #'emacspeak-agent-shell-select-background-speech-level))
             (setq emacspeak-agent-shell--table-navigation-active t)
             (should
              (eq (key-binding (kbd "C-c C-q"))
-                 #'emacspeak-agent-shell-cycle-speech-level))
+                 #'emacspeak-agent-shell-select-speech-level))
+            (should
+             (eq (key-binding (kbd "C-c C-S-q"))
+                 #'emacspeak-agent-shell-select-background-speech-level))
             (should
              (equal
               (emacspeak-agent-shell-test--capture-events
-                (let ((emacspeak-agent-shell-foreground-speech-level
-                       'response))
+                (cl-letf (((symbol-function 'completing-read)
+                           (lambda (&rest _) "notify")))
                   (call-interactively
-                   #'emacspeak-agent-shell-cycle-speech-level)))
+                   #'emacspeak-agent-shell-select-speech-level)))
               '((icon select-object)
                 (speak
                  "Agent speech notify for Codex Agent @ viewport-level."))))
@@ -826,6 +839,72 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (with-current-buffer shell
             (should (eq emacspeak-agent-shell-speech-level 'notify))))
       (dolist (buffer (list shell viewport))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest emacspeak-agent-shell-background-selector-cancels-auto-sessions ()
+  "Selecting a quiet background default should cancel only affected queues."
+  (let ((foreground (generate-new-buffer "Codex Agent @ selector-front"))
+        (background (generate-new-buffer "Codex Agent @ selector-back"))
+        (forced (generate-new-buffer "Codex Agent @ selector-forced"))
+        background-timer forced-timer selected-level)
+    (unwind-protect
+        (progn
+          (dolist (buffer (list foreground background forced))
+            (with-current-buffer buffer
+              (setq major-mode 'agent-shell-mode)
+              (setq-local emacspeak-agent-shell--pending-bodies
+                          (make-hash-table :test #'equal))
+              (puthash "1-agent_message_chunk" "Pending"
+                       emacspeak-agent-shell--pending-bodies)
+              (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                          '("1-agent_message_chunk"))))
+          (with-current-buffer background
+            (setq-local emacspeak-agent-shell-speech-level 'auto)
+            (setq background-timer (run-with-timer 3600 nil #'ignore))
+            (setq-local emacspeak-agent-shell--pending-speech-timer
+                        background-timer))
+          (with-current-buffer forced
+            (setq-local emacspeak-agent-shell-speech-level 'full)
+            (setq forced-timer (run-with-timer 3600 nil #'ignore))
+            (setq-local emacspeak-agent-shell--pending-speech-timer
+                        forced-timer))
+          (with-current-buffer foreground
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (cl-letf
+                    (((symbol-function 'completing-read)
+                      (lambda (&rest _) "quiet"))
+                     ((symbol-function 'buffer-list)
+                      (lambda (&optional _frame)
+                        (list foreground background forced)))
+                     ((symbol-function
+                       'emacspeak-agent-shell--session-focused-p)
+                      (lambda (&optional buffer)
+                        (eq (or buffer (current-buffer)) foreground))))
+                  (call-interactively
+                   #'emacspeak-agent-shell-select-background-speech-level)
+                  (setq selected-level
+                        emacspeak-agent-shell-background-speech-level)))
+              '((icon off)
+                (speak "Background agent speech quiet.")))))
+          (should (eq selected-level 'quiet))
+          (with-current-buffer background
+            (should-not emacspeak-agent-shell--pending-speech-timer)
+            (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+            (should (= 0 (hash-table-count
+                          emacspeak-agent-shell--pending-bodies))))
+          (with-current-buffer forced
+            (should (eq emacspeak-agent-shell--pending-speech-timer
+                        forced-timer))
+            (should emacspeak-agent-shell--pending-speech-qualified-ids)
+            (should (= 1 (hash-table-count
+                          emacspeak-agent-shell--pending-bodies)))))
+      (dolist (timer (list background-timer forced-timer))
+        (when (timerp timer)
+          (cancel-timer timer)))
+      (dolist (buffer (list foreground background forced))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 

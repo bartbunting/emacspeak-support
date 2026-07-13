@@ -353,6 +353,14 @@ A selected viewport counts as focus for its associated shell buffer."
   '(full response notify quiet)
   "Order used by `emacspeak-agent-shell-cycle-speech-level'.")
 
+(defconst emacspeak-agent-shell--speech-level-choices
+  '(("automatic" . auto)
+    ("full" . full)
+    ("response" . response)
+    ("notify" . notify)
+    ("quiet" . quiet))
+  "Completion candidates for interactive agent-shell speech levels.")
+
 (defun emacspeak-agent-shell--session-buffer (&optional buffer)
   "Return the agent-shell session associated with BUFFER.
 Signal a user error when BUFFER is neither a shell nor an associated viewport."
@@ -372,21 +380,28 @@ Signal a user error when BUFFER is neither a shell nor an associated viewport."
   (or (cadr (memq level emacspeak-agent-shell--speech-level-cycle))
       (car emacspeak-agent-shell--speech-level-cycle)))
 
-(defun emacspeak-agent-shell-cycle-speech-level (&optional reset)
-  "Cycle automatic speech for the current agent-shell session.
-Cycle from the effective level toward less speech: full, response, notify,
-quiet, then full again.  With prefix argument RESET, restore `auto' so focus
-selects the configured foreground or background level."
-  (interactive "P")
-  (let* ((shell-buffer (emacspeak-agent-shell--session-buffer))
-         (label (emacspeak-agent-shell--session-label shell-buffer))
-         level announcement)
+(defun emacspeak-agent-shell--read-speech-level
+    (prompt current &optional include-auto)
+  "Read a speech level with PROMPT, defaulting to CURRENT.
+When INCLUDE-AUTO is non-nil, include the automatic focus-aware choice."
+  (let* ((choices
+          (if include-auto
+              emacspeak-agent-shell--speech-level-choices
+            (cdr emacspeak-agent-shell--speech-level-choices)))
+         (default (or (car (rassq current choices)) (caar choices)))
+         (selected
+          (completing-read
+           (format-prompt prompt default)
+           (mapcar #'car choices)
+           nil t nil nil default)))
+    (alist-get selected choices nil nil #'string=)))
+
+(defun emacspeak-agent-shell--set-session-speech-level
+    (shell-buffer level)
+  "Set SHELL-BUFFER's speech override to LEVEL and announce the result."
+  (let ((label (emacspeak-agent-shell--session-label shell-buffer))
+        announcement)
     (with-current-buffer shell-buffer
-      (setq level
-            (if reset
-                'auto
-              (emacspeak-agent-shell--next-speech-level
-               (emacspeak-agent-shell--effective-speech-level shell-buffer))))
       (setq-local emacspeak-agent-shell-speech-level level)
       (when (memq level '(notify quiet))
         (emacspeak-agent-shell--cancel-pending-speech))
@@ -397,12 +412,62 @@ selects the configured foreground or background level."
                         emacspeak-agent-shell-background-speech-level)
               (format "Agent speech %s for %s." level label))))
     (emacspeak-icon (if (eq level 'quiet) 'off 'select-object))
-    (dtk-speak announcement)))
+    (dtk-speak announcement)
+    level))
+
+(defun emacspeak-agent-shell-select-speech-level ()
+  "Select the automatic speech level for the current agent-shell session."
+  (interactive)
+  (let ((shell-buffer (emacspeak-agent-shell--session-buffer)))
+    (emacspeak-agent-shell--set-session-speech-level
+     shell-buffer
+     (with-current-buffer shell-buffer
+       (emacspeak-agent-shell--read-speech-level
+        "Session speech level" emacspeak-agent-shell-speech-level t)))))
+
+(defun emacspeak-agent-shell--cancel-background-pending-speech ()
+  "Cancel queued speech affected by a non-content background default."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'agent-shell-mode)
+                   (eq emacspeak-agent-shell-speech-level 'auto)
+                   (not (emacspeak-agent-shell--session-focused-p buffer)))
+          (emacspeak-agent-shell--cancel-pending-speech))))))
+
+(defun emacspeak-agent-shell-select-background-speech-level ()
+  "Select the automatic speech level shared by background sessions."
+  (interactive)
+  (let ((level
+         (emacspeak-agent-shell--read-speech-level
+          "Background speech level"
+          emacspeak-agent-shell-background-speech-level)))
+    (setq emacspeak-agent-shell-background-speech-level level)
+    (when (memq level '(notify quiet))
+      (emacspeak-agent-shell--cancel-background-pending-speech))
+    (emacspeak-icon (if (eq level 'quiet) 'off 'select-object))
+    (dtk-speak (format "Background agent speech %s." level))))
+
+(defun emacspeak-agent-shell-cycle-speech-level (&optional reset)
+  "Cycle automatic speech for the current agent-shell session.
+Cycle from the effective level toward less speech: full, response, notify,
+quiet, then full again.  With prefix argument RESET, restore `auto' so focus
+selects the configured foreground or background level."
+  (interactive "P")
+  (let ((shell-buffer (emacspeak-agent-shell--session-buffer)))
+    (emacspeak-agent-shell--set-session-speech-level
+     shell-buffer
+     (if reset
+         'auto
+       (emacspeak-agent-shell--next-speech-level
+        (emacspeak-agent-shell--effective-speech-level shell-buffer))))))
 
 (defvar emacspeak-agent-shell--speech-control-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-q")
-                #'emacspeak-agent-shell-cycle-speech-level)
+                #'emacspeak-agent-shell-select-speech-level)
+    (define-key map (kbd "C-c C-S-q")
+                #'emacspeak-agent-shell-select-background-speech-level)
     map)
   "Keymap for agent-shell speech-level controls.")
 

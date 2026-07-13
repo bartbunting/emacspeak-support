@@ -84,9 +84,12 @@ use `emacspeak-agent-shell-foreground-speech-level`; other sessions use
 
 Permissions and errors remain audible at every routine level.  Background
 announcements use the notification stream and include the session name.
-`C-c C-q` cycles a session toward less speech and cancels queued content when
-it reaches `notify` or `quiet`.  `C-u C-c C-q` restores automatic focus-aware
-behavior.  The same command controls the backing shell from viewport mode.
+`C-c C-q` selects the current session's override, including automatic mode;
+`C-c C-S-q` selects the default for all automatic background sessions.  The
+session selector controls the backing shell from viewport mode.  Selecting
+`notify` or `quiet` cancels queued speech affected by that setting.  The older
+`emacspeak-agent-shell-cycle-speech-level` command remains available through
+`M-x` for users who prefer repeated cycling.
 
 ## Findings
 
