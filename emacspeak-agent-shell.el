@@ -950,6 +950,7 @@ and speak them after streaming pauses for a brief period."
     ("Plan" . plan)
     ("Permission" . permission)
     ("Error" . error)
+    ("Table" . table)
     ("Other" . other))
   "Completion candidates for semantic agent-shell block navigation.")
 
@@ -1032,6 +1033,28 @@ keep that compatibility inference isolated here."
         (setq position next)))
     (emacspeak-agent-shell--concise-block-text result)))
 
+(defun emacspeak-agent-shell--block-section-range (start end section)
+  "Return the range of fragment SECTION between START and END."
+  (let ((position start)
+        result)
+    (while (and (< position end) (not result))
+      (let ((next
+             (or (next-single-property-change
+                  position 'agent-shell-ui-section nil end)
+                 end)))
+        (when (eq (get-text-property position 'agent-shell-ui-section)
+                  section)
+          (setq result (cons position next)))
+        (setq position next)))
+    result))
+
+(defun emacspeak-agent-shell--visible-block-text (start end)
+  "Return complete visible block text between START and END."
+  (when (and start end (< start end))
+    (let ((text (filter-buffer-substring start end)))
+      (setq text (string-trim (substring-no-properties text)))
+      (unless (string-empty-p text) text))))
+
 (defun emacspeak-agent-shell--fragment-location (start end state)
   "Return a semantic location for fragment STATE from START to END."
   (let* ((qualified-id (map-elt state :qualified-id))
@@ -1048,21 +1071,21 @@ keep that compatibility inference isolated here."
            start end 'agent-shell-ui-section 'indicator))
          (label
           (emacspeak-agent-shell--concise-block-text
-           (string-join (delq nil (list left right)) " "))))
-    (unless label
-      (setq label
-            (cond
-             ((eq type 'user-prompt)
-              (emacspeak-agent-shell--concise-block-text
-               (buffer-substring-no-properties start end)))
-             ((memq type '(permission error other))
-              (emacspeak-agent-shell--block-section-text
-               start end 'body)))))
+           (string-join (delq nil (list left right)) " ")))
+         (body-range
+          (emacspeak-agent-shell--block-section-range start end 'body))
+         (body
+          (if body-range
+              (emacspeak-agent-shell--visible-block-text
+               (car body-range) (cdr body-range))
+            (when (eq type 'user-prompt)
+              (emacspeak-agent-shell--visible-block-text start end)))))
     (list :position start
           :end end
           :type type
           :state state
           :label label
+          :body body
           :fold-state
           (when indicator
             (if (map-elt state :collapsed) "collapsed" "expanded")))))
@@ -1104,20 +1127,51 @@ keep that compatibility inference isolated here."
                   (if (eq property 'agent-shell-viewport-prompt)
                       value
                     (emacspeak-agent-shell--face-includes-p
-                     value 'agent-shell-prompt))))
+                     value 'agent-shell-prompt)))
+                 (body-end
+                  (when prompt-p
+                    (if (eq property 'agent-shell-viewport-prompt)
+                        next
+                      (or (text-property-any
+                           next (point-max) 'shell-maker--marker t)
+                          (point-max))))))
             (when prompt-p
               (push
                (list :position position
-                     :end next
+                     :end body-end
                      :type 'user-prompt
-                     :label
-                     (emacspeak-agent-shell--concise-block-text
-                      (save-excursion
-                        (goto-char position)
-                        (buffer-substring-no-properties
-                         position (line-end-position)))))
+                     :body
+                     (emacspeak-agent-shell--visible-block-text
+                      position body-end))
                locations))
             (setq position next)))))
+    (nreverse locations)))
+
+(defun emacspeak-agent-shell--table-locations ()
+  "Return semantic locations for rendered Markdown tables."
+  (let ((position (point-min))
+        locations)
+    (while (< position (point-max))
+      (let* ((source
+              (get-text-property
+               position 'agent-shell-markdown-table-source))
+             (next
+              (or (next-single-property-change
+                   position 'agent-shell-markdown-table-source
+                   nil (point-max))
+                  (point-max))))
+        (when source
+          (when-let ((cell
+                      (text-property-any
+                       position next
+                       'agent-shell-markdown-table-cell-start t)))
+            (push (list :position cell
+                        :end next
+                        :type 'table
+                        :state
+                        (get-text-property cell 'agent-shell-ui-state))
+                  locations)))
+        (setq position next)))
     (nreverse locations)))
 
 (defun emacspeak-agent-shell--deduplicate-block-locations (locations)
@@ -1135,7 +1189,8 @@ keep that compatibility inference isolated here."
   "Return all semantic transcript block locations in buffer order."
   (let* ((fragments (emacspeak-agent-shell--fragment-locations))
          (prompts (emacspeak-agent-shell--prompt-locations))
-         (locations (append fragments prompts)))
+         (tables (emacspeak-agent-shell--table-locations))
+         (locations (append fragments prompts tables)))
     ;; A restored viewport normally retains response fragment state.  Keep a
     ;; whole-response fallback for older or plain viewport content.
     (when (and (derived-mode-p 'agent-shell-viewport-view-mode)
@@ -1152,7 +1207,10 @@ keep that compatibility inference isolated here."
                      (and (< (point) (point-max)) (point)))))
         (push (list :position response
                     :end (point-max)
-                    :type 'agent-response)
+                    :type 'agent-response
+                    :body
+                    (emacspeak-agent-shell--visible-block-text
+                     response (point-max)))
               locations)))
     (sort (emacspeak-agent-shell--deduplicate-block-locations locations)
           (lambda (left right)
@@ -1176,26 +1234,20 @@ keep that compatibility inference isolated here."
     (goto-char (plist-get parent :position))
     (agent-shell-ui-toggle-fragment)))
 
-(defun emacspeak-agent-shell--block-location-announcement
-    (location index count)
-  "Format LOCATION at INDEX among COUNT matching semantic blocks."
-  (let* ((type-label
-          (emacspeak-agent-shell--block-type-label
-           (plist-get location :type)))
-         (label (plist-get location :label))
-         (label
-          (unless (and label (string-equal-ignore-case label type-label))
-            label)))
-    (concat
-     (string-join
-      (delq
-       nil
-       (list
-        (format "%s %d of %d" type-label index count)
-        label
-        (plist-get location :fold-state)))
-      ", ")
-     ".")))
+(defun emacspeak-agent-shell--block-location-speech (location)
+  "Return complete semantic speech for block LOCATION."
+  (let* ((label (plist-get location :label))
+         (body (plist-get location :body))
+         (fallback
+          (or label
+              (emacspeak-agent-shell--block-type-label
+               (plist-get location :type)))))
+    (if body
+        (string-join (delq nil (list label body)) ". ")
+      (concat
+       (string-join
+        (delq nil (list fallback (plist-get location :fold-state))) ", ")
+       "."))))
 
 (defun emacspeak-agent-shell--jump-block-of-type (type direction)
   "Move to semantic block TYPE in DIRECTION and announce it."
@@ -1217,18 +1269,20 @@ keep that compatibility inference isolated here."
              (last
               (seq-take-while
                (lambda (location)
-                 (< (plist-get location :position) origin))
+                 (if (eq type 'table)
+                     (<= (plist-get location :end) origin)
+                   (< (plist-get location :position) origin)))
                locations))))))
     (if target
         (progn
           (emacspeak-agent-shell--expand-block-parent target)
           (goto-char (plist-get target :position))
           (dtk-stop)
-          (emacspeak-icon 'large-movement)
-          (dtk-speak
-           (emacspeak-agent-shell--block-location-announcement
-            target (1+ (seq-position locations target))
-            (length locations)))
+          (if (eq type 'table)
+              (emacspeak-agent-shell--table-entry-feedback direction)
+            (emacspeak-icon 'large-movement)
+            (dtk-speak
+             (emacspeak-agent-shell--block-location-speech target)))
           target)
       (emacspeak-icon 'warn-user)
       (dtk-speak

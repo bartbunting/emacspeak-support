@@ -36,8 +36,8 @@ Completed so far:
 - current viewport compose submission and accepted-cancellation feedback,
   including suppression of false success and declined-cancellation cues;
 - completing-read transcript navigation by agent response, user prompt,
-  thought, tool call/group, plan, permission, error, or other block, with
-  concise position/status feedback, explicit boundaries, collapsed-group
+  thought, tool call/group, plan, permission, error, rendered table, or other
+  block, with complete body speech, explicit boundaries, collapsed-group
   expansion, and temporary repeat keys in shell and viewport buffers;
 - semantic Markdown table-cell feedback in shell and viewport navigation,
   with configurable row/column titles, data-first or title-first order, and
@@ -62,15 +62,19 @@ remaining face-map compatibility failure are still open Phase 0/1 work.
 `C-c ]` selects a semantic block type and moves to its next occurrence;
 `C-c [` selects a type and moves to its previous occurrence.  The previous
 selection is the default.  After a successful move, `]` and `[` temporarily
-repeat that selection in either direction.  Navigation does not wrap, and it
-speaks only the type, position, label/status, and fold state.  Selecting a tool
-inside a collapsed group expands the group before moving to the tool.
+repeat that selection in either direction.  Navigation does not wrap.  It
+speaks the complete selected body, preceded by a label/status where present;
+bodyless groups retain concise label and fold-state feedback.  Selecting a
+tool inside a collapsed group expands the group before moving to the tool.
+Rendered tables are also selectable, but retain the less chatty table-entry
+announcement: dimensions and the entry cell rather than every cell.
 
 Agent-shell currently exposes generic next/previous block navigation but no
 public semantic block-type field.  The compatibility adapter therefore infers
-type from `agent-shell-ui-state` qualified IDs and group metadata, with prompt
-and viewport properties as fallbacks.  Keep this inference isolated and
-replace it with a public semantic accessor if agent-shell adds one.
+type from `agent-shell-ui-state` qualified IDs and group metadata, with prompt,
+viewport, and rendered-table properties as fallbacks.  Keep this inference
+isolated and replace it with a public semantic accessor if agent-shell adds
+one.
 
 ### Markdown Table Keys
 
@@ -166,7 +170,7 @@ session selector controls the backing shell from viewport mode.  Selecting
 - busy, blocked, and ready state, plus public idle, error, and turn-complete
   lifecycle events;
 - grouped tool calls, status transitions, tool diffs, and failures;
-- fragment summary/body reading and fold-all commands;
+- fragment summary reading and fold-all commands;
 - Markdown headings, links, inline/source code, and blockquotes;
 - table search and filtered row/column reading beyond the implemented table
   entry, navigation, context, whole-row/column speech, and cell copying;
@@ -284,8 +288,8 @@ truncated speech, and restored user messages and unknown blocks remain usable.
 ### Phase 3: Navigation, Voices, and Viewport
 
 - Map current agent-shell and Markdown faces to appropriate personalities.
-- Extend the implemented typed block kind/status/fold feedback to generic item
-  navigation and full semantic-content reading.
+- Extend the implemented typed block body/status/fold feedback to generic item
+  navigation.
 - Add table cell/header context using Emacspeak's tabulated-list patterns.
 - Cover fold, reply, compose, history, queue, and current viewport commands.
 - Speak exact model, mode, thought-level, and config values.

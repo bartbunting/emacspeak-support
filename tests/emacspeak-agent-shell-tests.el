@@ -243,12 +243,18 @@ ENTRIES is an alist of qualified block IDs to body strings."
   `(with-temp-buffer
      (insert "Transcript start\n")
      (insert
-      (propertize "Codex> first request\n"
+      (propertize "Codex> "
                   'font-lock-face 'agent-shell-prompt))
+     (insert "first request\ncontinued request")
+     (insert
+      (propertize "<shell-maker-end-of-prompt>"
+                  'shell-maker--marker t
+                  'invisible t))
+     (insert "\n")
      (agent-shell-ui-update-fragment
       (agent-shell-ui-make-fragment-model
        :namespace-id "1" :block-id "1-agent_message_chunk"
-       :body "First answer")
+       :body "First answer\nwith a second line")
       :navigation 'never :expanded t)
      (agent-shell-ui-update-fragment
       (agent-shell-ui-make-fragment-model
@@ -259,7 +265,7 @@ ENTRIES is an alist of qualified block IDs to body strings."
       (agent-shell-ui-make-fragment-model
        :namespace-id "1" :block-id "tool-123"
        :label-left "completed" :label-right "Read file"
-       :body "Tool output" :group-id "tool-calls-1"
+       :body "Tool output\nsecond line" :group-id "tool-calls-1"
        :group-label "Tool calls" :group-expanded nil)
       :expanded nil)
      (agent-shell-ui-update-fragment
@@ -1467,7 +1473,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                     permission error agent-response)))))
 
 (ert-deftest emacspeak-agent-shell-block-navigation-expands-tool-group ()
-  "Selecting a hidden tool should expand its group and announce its state."
+  "Selecting a hidden tool should expand its group and read its full body."
   (emacspeak-agent-shell-test--with-semantic-blocks
     (let* ((locations (emacspeak-agent-shell--block-locations))
            (tool
@@ -1484,12 +1490,34 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            'tool-call 'forward))
         '((stop nil)
           (icon large-movement)
-          (speak "Tool call 1 of 1, completed Read file, collapsed."))))
+          (speak "completed Read file. Tool output\nsecond line"))))
       (should (= (point) (plist-get tool :position)))
       (should-not (invisible-p (point))))))
 
+(ert-deftest emacspeak-agent-shell-block-navigation-reads-prompt-and-group ()
+  "Manual navigation should read prompt bodies and describe bodyless groups."
+  (emacspeak-agent-shell-test--with-semantic-blocks
+    (goto-char (point-min))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--jump-block-of-type
+         'user-prompt 'forward))
+      '((stop nil)
+        (icon large-movement)
+        (speak "Codex> first request\ncontinued request"))))
+    (goto-char (point-min))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--jump-block-of-type
+         'tool-group 'forward))
+      '((stop nil)
+        (icon large-movement)
+        (speak "Tool calls, collapsed."))))))
+
 (ert-deftest emacspeak-agent-shell-block-navigation-does-not-wrap ()
-  "Typed navigation should count matches and stop at transcript boundaries."
+  "Typed navigation should read bodies and stop at transcript boundaries."
   (emacspeak-agent-shell-test--with-semantic-blocks
     (goto-char (point-min))
     (should
@@ -1501,10 +1529,10 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          'agent-response 'forward))
       '((stop nil)
         (icon large-movement)
-        (speak "Agent response 1 of 2.")
+        (speak "First answer\nwith a second line")
         (stop nil)
         (icon large-movement)
-        (speak "Agent response 2 of 2."))))
+        (speak "Second answer"))))
     (should
      (equal
       (emacspeak-agent-shell-test--capture-events
@@ -1519,7 +1547,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          'agent-response 'backward))
       '((stop nil)
         (icon large-movement)
-        (speak "Agent response 1 of 2."))))))
+        (speak "First answer\nwith a second line"))))))
 
 (ert-deftest emacspeak-agent-shell-block-navigation-selects-and-repeats ()
   "Interactive navigation should remember completion and enable repeat keys."
@@ -1539,7 +1567,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
              #'emacspeak-agent-shell-next-block-of-type)))
         '((stop nil)
           (icon large-movement)
-          (speak "Plan 1 of 1, expanded."))))
+          (speak "Plan. One step"))))
       (should (eq emacspeak-agent-shell--block-navigation-type 'plan))
       (should (eq activated-map emacspeak-agent-shell--block-repeat-map))
       (should
@@ -1571,8 +1599,46 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            'agent-response 'forward))
         '((stop nil)
           (icon large-movement)
-          (speak "Agent response 1 of 1."))))
+          (speak "Plain answer"))))
       (should (= (point) response-position)))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-selects-rendered-tables ()
+  "Rendered tables should be selectable without reading every cell."
+  (let ((emacspeak-agent-shell-table-titles '(column))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        (concat "before\n"
+                "| A | B |\n|---|---|\n| 1 | 2 |\n"
+                "between\n"
+                "| C | D |\n|---|---|\n| 3 | 4 |\n"
+                "after\n")
+      (setq major-mode 'agent-shell-mode)
+      (should
+       (= 2
+          (length
+           (seq-filter
+            (lambda (location)
+              (eq (plist-get location :type) 'table))
+            (emacspeak-agent-shell--block-locations)))))
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type 'table 'forward)
+          (emacspeak-agent-shell--jump-block-of-type 'table 'forward))
+        '((stop nil)
+          (icon open-object)
+          (speak "Table, 1 data row, 2 columns. A.")
+          (stop nil)
+          (icon open-object)
+          (speak "Table, 1 data row, 2 columns. C."))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type 'table 'backward))
+        '((stop nil)
+          (icon open-object)
+          (speak "Table, 1 data row, 2 columns. 2, B.")))))))
 
 (ert-deftest emacspeak-agent-shell-table-cell-feedback-is-customizable ()
   "Table feedback should support every title set and both orderings."
