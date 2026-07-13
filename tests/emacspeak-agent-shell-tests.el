@@ -69,6 +69,10 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--block-location-at-point
                   "emacspeak-agent-shell" (&optional position))
+(declare-function emacspeak-agent-shell--source-block-locations
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--source-block-summary
+                  "emacspeak-agent-shell" (location))
 (declare-function emacspeak-agent-shell--jump-block-of-type
                   "emacspeak-agent-shell" (type direction &optional origin))
 (declare-function emacspeak-agent-shell--buffer-setup
@@ -148,6 +152,10 @@
 (declare-function emacspeak-agent-shell-speech-setup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speak-header
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-speak-source-block
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-copy-source-block
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-select-speaking-method
                   "emacspeak-agent-shell" ())
@@ -283,6 +291,19 @@ ENTRIES is an alist of qualified block IDs to body strings."
   (declare (indent 1) (debug t))
   `(with-temp-buffer
      (insert ,source)
+     (agent-shell-markdown-replace-markup)
+     ,@body))
+
+(defmacro emacspeak-agent-shell-test--with-rendered-source-blocks (&rest body)
+  "Render two fenced source blocks in a temporary buffer, then run BODY."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (insert
+      (concat "before\n"
+              "```elisp\n(message \"hello\")\n(+ 1 2)\n```\n"
+              "between\n"
+              "```python\nprint(\"hello\")\n```\n"
+              "after\n"))
      (agent-shell-markdown-replace-markup)
      ,@body))
 
@@ -1187,12 +1208,16 @@ Return speech events plus the target character.  DIRECTION is `forward' or
   (let* ((map emacspeak-agent-shell--speech-control-map)
          (current-key (kbd "C-c C-q"))
          (background-key (kbd "C-c C-S-q"))
+         (speak-source-key (kbd "C-c C-b"))
+         (copy-source-key (kbd "C-c C-y"))
          (next-block-key (kbd "C-c ]"))
          (previous-block-key (kbd "C-c ["))
          (context-next-key (kbd "]"))
          (context-previous-key (kbd "["))
          (saved-current (lookup-key map current-key))
          (saved-background (lookup-key map background-key))
+         (saved-speak-source (lookup-key map speak-source-key))
+         (saved-copy-source (lookup-key map copy-source-key))
          (saved-next-block (lookup-key map next-block-key))
          (saved-previous-block (lookup-key map previous-block-key))
          (saved-context-next (lookup-key map context-next-key))
@@ -1202,6 +1227,8 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (define-key map current-key
                       #'emacspeak-agent-shell-cycle-speech-level)
           (define-key map background-key nil)
+          (define-key map speak-source-key nil)
+          (define-key map copy-source-key nil)
           (define-key map next-block-key nil)
           (define-key map previous-block-key nil)
           (define-key map context-next-key nil)
@@ -1213,6 +1240,12 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (should
            (eq (lookup-key map background-key)
                #'emacspeak-agent-shell-select-background-speech-level))
+          (should
+           (eq (lookup-key map speak-source-key)
+               #'emacspeak-agent-shell-speak-source-block))
+          (should
+           (eq (lookup-key map copy-source-key)
+               #'emacspeak-agent-shell-copy-source-block))
           (should
            (eq (lookup-key map next-block-key)
                #'emacspeak-agent-shell-next-block-of-type))
@@ -1227,6 +1260,8 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                #'emacspeak-agent-shell-previous-block-at-point)))
       (define-key map current-key saved-current)
       (define-key map background-key saved-background)
+      (define-key map speak-source-key saved-speak-source)
+      (define-key map copy-source-key saved-copy-source)
       (define-key map next-block-key saved-next-block)
       (define-key map previous-block-key saved-previous-block)
       (define-key map context-next-key saved-context-next)
@@ -1252,6 +1287,12 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should
              (eq (key-binding (kbd "C-c C-S-q"))
                  #'emacspeak-agent-shell-select-background-speech-level))
+            (should
+             (eq (key-binding (kbd "C-c C-b"))
+                 #'emacspeak-agent-shell-speak-source-block))
+            (should
+             (eq (key-binding (kbd "C-c C-y"))
+                 #'emacspeak-agent-shell-copy-source-block))
             (should
              (eq (key-binding (kbd "C-c ]"))
                  #'emacspeak-agent-shell-next-block-of-type))
@@ -1976,6 +2017,169 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (icon open-object)
           (speak "Table, 1 data row, 2 columns. C."))))
       (should (eq emacspeak-agent-shell--block-navigation-type 'table)))))
+
+(ert-deftest emacspeak-agent-shell-source-block-locations-are-semantic ()
+  "Rendered fenced blocks should expose body, language, and panel bounds."
+  (emacspeak-agent-shell-test--with-rendered-source-blocks
+    (setq major-mode 'agent-shell-mode)
+    (let ((locations (emacspeak-agent-shell--source-block-locations)))
+      (should (= 2 (length locations)))
+      (should (equal (mapcar (lambda (item) (plist-get item :language))
+                             locations)
+                     '("elisp" "python")))
+      (should (equal (mapcar (lambda (item) (plist-get item :line-count))
+                             locations)
+                     '(2 1)))
+      (should
+       (equal (mapcar (lambda (item) (plist-get item :body)) locations)
+              '("(message \"hello\")\n(+ 1 2)"
+                "print(\"hello\")")))
+      (dolist (location locations)
+        (should (< (plist-get location :start)
+                   (plist-get location :position)))
+        (should (> (plist-get location :end)
+                   (plist-get location :position)))
+        (should
+         (get-text-property
+          (plist-get location :position)
+          'agent-shell-markdown-source-block-body)))
+      (put-text-property
+       (point-min) (point-max) 'agent-shell-ui-state
+       '((:qualified-id . "1-agent_message_chunk")))
+      (put-text-property
+       (point-min) (point-max) 'agent-shell-ui-section 'body)
+      (goto-char (point-min))
+      (search-forward "elisp")
+      (should
+       (eq (plist-get (emacspeak-agent-shell--block-location-at-point) :type)
+           'source-block)))
+    (should
+     (equal
+      (emacspeak-agent-shell--source-block-summary
+       '(:language nil :line-count 1))
+      "Source block, 1 line."))))
+
+(ert-deftest emacspeak-agent-shell-source-block-navigation-is-concise ()
+  "Source selection and inferred repeat should speak summaries and boundaries."
+  (let ((emacspeak-agent-shell--block-navigation-type 'agent-response)
+        activated-map)
+    (emacspeak-agent-shell-test--with-rendered-source-blocks
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) "Source block"))
+                    ((symbol-function 'set-transient-map)
+                     (lambda (map &rest _)
+                       (setq activated-map map))))
+            (call-interactively
+             #'emacspeak-agent-shell-next-block-of-type)))
+        '((stop nil)
+          (icon open-object)
+          (speak "elisp source block, 2 lines."))))
+      (should (eq emacspeak-agent-shell--block-navigation-type 'source-block))
+      (should (eq activated-map emacspeak-agent-shell--block-repeat-map))
+      (goto-char (point-min))
+      (search-forward "elisp")
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf (((symbol-function 'set-transient-map) #'ignore))
+            (emacspeak-agent-shell-next-block-at-point)))
+        '((stop nil)
+          (icon open-object)
+          (speak "python source block, 1 line."))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'source-block 'forward))
+        '((icon warn-user)
+          (speak "No later source block."))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'source-block 'backward))
+        '((stop nil)
+          (icon open-object)
+          (speak "elisp source block, 2 lines.")))))))
+
+(ert-deftest emacspeak-agent-shell-source-block-read-and-copy-use-public-body ()
+  "Explicit source commands should read voiced code and copy its plain body."
+  (emacspeak-agent-shell-test--with-rendered-source-blocks
+    (setq major-mode 'agent-shell-mode)
+    (goto-char (point-min))
+    (search-forward "(message")
+    (backward-char (length "(message"))
+    (let* ((events
+            (emacspeak-agent-shell-test--capture-events
+              (call-interactively
+               #'emacspeak-agent-shell-speak-source-block)))
+           (speech (cadr (nth 2 events))))
+      (should
+       (equal events
+              '((stop nil)
+                (icon item)
+                (speak
+                 "elisp source block, 2 lines. (message \"hello\")\n(+ 1 2)"))))
+      (should
+       (eq (emacspeak-agent-shell-test--face-at-text
+            speech "elisp source block")
+           'agent-shell-markdown-source-block-language))
+      (should
+       (eq (emacspeak-agent-shell-test--face-at-text speech "(message")
+           'agent-shell-markdown-source-block)))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively
+           #'emacspeak-agent-shell-copy-source-block))
+        '((icon yank-object)
+          (message "Copied code block"))))
+      (should (equal (current-kill 0) "(message \"hello\")\n(+ 1 2)")))))
+
+(ert-deftest emacspeak-agent-shell-source-navigation-expands-parent ()
+  "A hidden source target should expand its collapsed enclosing group."
+  (emacspeak-agent-shell-test--with-rendered-source-blocks
+    (setq major-mode 'agent-shell-mode)
+    (let* ((source (car (emacspeak-agent-shell--source-block-locations)))
+           (position (plist-get source :position))
+           toggled)
+      (put-text-property
+       position (plist-get source :end) 'agent-shell-ui-state
+       '((:qualified-id . "tool-source") (:group-id . "group-1")))
+      (put-text-property position (plist-get source :end) 'invisible 'hidden)
+      (add-to-invisibility-spec 'hidden)
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (cl-letf
+              (((symbol-function 'emacspeak-agent-shell--fragment-locations)
+                (lambda ()
+                  (list
+                   (list :position (point-min)
+                         :state
+                         '((:qualified-id . "group-1")
+                           (:collapsed . t))))))
+               ((symbol-function 'agent-shell-ui-toggle-fragment)
+                (lambda ()
+                  (setq toggled t)
+                  (remove-text-properties
+                   (point-min) (point-max) '(invisible nil)))))
+            (emacspeak-agent-shell--jump-block-of-type
+             'source-block 'forward)))
+        '((stop nil)
+          (icon open-object)
+          (speak "elisp source block, 2 lines."))))
+      (should toggled)
+      (should (= (point) position))
+      (should-not (invisible-p position)))))
 
 (ert-deftest emacspeak-agent-shell-context-navigation-preserves-input ()
   "Contextual bracket keys should self-insert in both prompt editors."

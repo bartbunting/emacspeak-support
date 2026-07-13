@@ -64,6 +64,10 @@
 
 (declare-function agent-shell--context-usage-face
                   "agent-shell-usage" (percentage))
+(declare-function agent-shell-copy-source-block-at-point
+                  "agent-shell" (&optional pos))
+(declare-function agent-shell-markdown-source-block-at-point
+                  "agent-shell-markdown" (&optional pos))
 (declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
 
 ;;;  Customization
@@ -764,6 +768,10 @@ selects the configured foreground or background level."
               #'emacspeak-agent-shell-select-speech-level)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-S-q")
               #'emacspeak-agent-shell-select-background-speech-level)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-b")
+              #'emacspeak-agent-shell-speak-source-block)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-y")
+              #'emacspeak-agent-shell-copy-source-block)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c ]")
               #'emacspeak-agent-shell-next-block-of-type)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c [")
@@ -1275,6 +1283,7 @@ and speak them after streaming pauses for a brief period."
     ("Permission" . permission)
     ("Error" . error)
     ("Table" . table)
+    ("Source block" . source-block)
     ("Other" . other))
   "Completion candidates for semantic agent-shell block navigation.")
 
@@ -1499,6 +1508,86 @@ keep that compatibility inference isolated here."
         (setq position next)))
     (nreverse locations)))
 
+(defun emacspeak-agent-shell--source-block-language (source)
+  "Return the fenced code language recorded in Markdown SOURCE."
+  (when (and (stringp source)
+             (string-match
+              "\\`[ \t]*`\\{3,\\}[ \t]*\\([[:alnum:]+#-]*\\)"
+              source))
+    (emacspeak-agent-shell--nonempty-text (match-string 1 source))))
+
+(defun emacspeak-agent-shell--source-block-panel-start (body-start)
+  "Return the rendered panel start preceding BODY-START."
+  (let ((start body-start))
+    (while (and (> start (point-min))
+                (stringp
+                 (get-text-property
+                  (1- start) 'agent-shell-markdown-source)))
+      (setq start
+            (or (previous-single-property-change
+                 start 'agent-shell-markdown-source nil (point-min))
+                (point-min))))
+    start))
+
+(defun emacspeak-agent-shell--source-block-panel-end (body-end)
+  "Return the rendered panel end following BODY-END."
+  (let ((end body-end))
+    (while (and (< end (point-max))
+                (stringp
+                 (get-text-property end 'agent-shell-markdown-source)))
+      (setq end
+            (or (next-single-property-change
+                 end 'agent-shell-markdown-source nil (point-max))
+                (point-max))))
+    end))
+
+(defun emacspeak-agent-shell--source-block-line-count (body)
+  "Return the number of logical lines in source block BODY."
+  (if (or (not (stringp body)) (string-empty-p body))
+      0
+    (let ((lines 1)
+          (position 0))
+      (while (string-match "\n" body position)
+        (setq lines (1+ lines)
+              position (match-end 0)))
+      lines)))
+
+(defun emacspeak-agent-shell--source-block-locations ()
+  "Return semantic locations for rendered Markdown source blocks."
+  (let ((position (point-min))
+        locations)
+    (while (< position (point-max))
+      (let* ((body-p
+              (get-text-property
+               position 'agent-shell-markdown-source-block-body))
+             (next
+              (or (next-single-property-change
+                   position 'agent-shell-markdown-source-block-body
+                   nil (point-max))
+                  (point-max))))
+        (when body-p
+          (let* ((source
+                  (get-text-property
+                   position 'agent-shell-markdown-source))
+                 (body
+                  (agent-shell-markdown-source-block-at-point position)))
+            (push
+             (list
+              :position position
+              :start
+              (emacspeak-agent-shell--source-block-panel-start position)
+              :end (emacspeak-agent-shell--source-block-panel-end next)
+              :type 'source-block
+              :state (get-text-property position 'agent-shell-ui-state)
+              :language
+              (emacspeak-agent-shell--source-block-language source)
+              :line-count
+              (emacspeak-agent-shell--source-block-line-count body)
+              :body body)
+             locations)))
+        (setq position next)))
+    (nreverse locations)))
+
 (defun emacspeak-agent-shell--deduplicate-block-locations (locations)
   "Return LOCATIONS without duplicate type/position pairs."
   (let (seen result)
@@ -1515,7 +1604,9 @@ keep that compatibility inference isolated here."
   (let* ((fragments (emacspeak-agent-shell--fragment-locations))
          (prompts (emacspeak-agent-shell--prompt-locations))
          (tables (emacspeak-agent-shell--table-locations))
-         (locations (append fragments prompts tables)))
+         (source-blocks
+          (emacspeak-agent-shell--source-block-locations))
+         (locations (append fragments prompts tables source-blocks)))
     ;; A restored viewport normally retains response fragment state.  Keep a
     ;; whole-response fallback for older or plain viewport content.
     (when (and (derived-mode-p 'agent-shell-viewport-view-mode)
@@ -1559,6 +1650,27 @@ keep that compatibility inference isolated here."
     (goto-char (plist-get parent :position))
     (agent-shell-ui-toggle-fragment)))
 
+(defun emacspeak-agent-shell--source-block-summary (location)
+  "Return a concise spoken summary of source block LOCATION."
+  (let ((language (plist-get location :language))
+        (lines (plist-get location :line-count)))
+    (if language
+        (format "%s source block, %d %s."
+                language lines (if (= lines 1) "line" "lines"))
+      (format "Source block, %d %s."
+              lines (if (= lines 1) "line" "lines")))))
+
+(defun emacspeak-agent-shell--source-block-speech (location)
+  "Return full voiced speech for source block LOCATION."
+  (concat
+   (propertize
+    (emacspeak-agent-shell--source-block-summary location)
+    'face 'agent-shell-markdown-source-block-language)
+   " "
+   (propertize
+    (or (plist-get location :body) "")
+    'face 'agent-shell-markdown-source-block)))
+
 (defun emacspeak-agent-shell--block-location-speech (location)
   "Return complete semantic speech for block LOCATION."
   (let* ((label (plist-get location :label))
@@ -1596,7 +1708,7 @@ Use ORIGIN instead of point as the navigation boundary when non-nil."
              (last
               (seq-take-while
                (lambda (location)
-                 (if (eq type 'table)
+                 (if (memq type '(table source-block))
                      (<= (plist-get location :end) origin)
                    (< (plist-get location :position) origin)))
                locations))))))
@@ -1605,22 +1717,29 @@ Use ORIGIN instead of point as the navigation boundary when non-nil."
           (emacspeak-agent-shell--expand-block-parent target)
           (goto-char (plist-get target :position))
           (dtk-stop)
-          (if (eq type 'table)
-              (emacspeak-agent-shell--table-entry-feedback direction)
-            (emacspeak-icon 'large-movement)
-            (dtk-speak
-             (emacspeak-agent-shell--block-location-speech target)))
+          (pcase type
+            ('table
+             (emacspeak-agent-shell--table-entry-feedback direction))
+            ('source-block
+             (emacspeak-icon 'open-object)
+             (dtk-speak
+              (emacspeak-agent-shell--source-block-summary target)))
+            (_
+             (emacspeak-icon 'large-movement)
+             (dtk-speak
+              (emacspeak-agent-shell--block-location-speech target))))
           target)
       (emacspeak-icon 'warn-user)
       (dtk-speak
-       (format "No %s %s block."
+       (format "No %s %s%s."
                (if (eq direction 'forward) "later" "earlier")
-               (downcase (emacspeak-agent-shell--block-type-label type))))
+               (downcase (emacspeak-agent-shell--block-type-label type))
+               (if (eq type 'source-block) "" " block")))
       nil)))
 
 (defun emacspeak-agent-shell--block-location-at-point (&optional position)
   "Return the innermost semantic block containing POSITION or point.
-Rendered tables win ties with their enclosing transcript fragment."
+Rendered tables and source blocks win ties with enclosing transcript blocks."
   (setq position (or position (point)))
   (car
    (sort
@@ -1642,8 +1761,33 @@ Rendered tables win ties with their enclosing transcript fragment."
                     (plist-get right :position)))))
         (or (< left-size right-size)
             (and (= left-size right-size)
-                 (eq (plist-get left :type) 'table)
-                 (not (eq (plist-get right :type) 'table)))))))))
+                 (memq (plist-get left :type) '(table source-block))
+                 (not
+                  (memq (plist-get right :type)
+                        '(table source-block))))))))))
+
+(defun emacspeak-agent-shell--source-block-at-point ()
+  "Return the semantic source block containing point, or signal an error."
+  (let ((location (emacspeak-agent-shell--block-location-at-point)))
+    (unless (eq (plist-get location :type) 'source-block)
+      (user-error "Not in a rendered source block"))
+    location))
+
+(defun emacspeak-agent-shell-speak-source-block ()
+  "Read the complete rendered Markdown source block at point."
+  (interactive)
+  (let ((location (emacspeak-agent-shell--source-block-at-point)))
+    (dtk-stop)
+    (emacspeak-icon 'item)
+    (dtk-speak (emacspeak-agent-shell--source-block-speech location))))
+
+(defun emacspeak-agent-shell-copy-source-block ()
+  "Copy the rendered Markdown source block at point using agent-shell."
+  (interactive)
+  (let ((location (emacspeak-agent-shell--source-block-at-point)))
+    (emacspeak-icon 'yank-object)
+    (agent-shell-copy-source-block-at-point
+     (plist-get location :position))))
 
 (defun emacspeak-agent-shell--literal-character-input-p ()
   "Return non-nil when this command key should insert at an editable prompt."

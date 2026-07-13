@@ -48,6 +48,10 @@ Completed so far:
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
   expansion, and temporary repeat keys in shell and viewport buffers;
+- semantic fenced source-block navigation in shell and viewport buffers, with
+  concise language and line-count arrival speech, contextual bracket
+  inference, explicit full reading, and copying through agent-shell's public
+  source-block command;
 - semantic Markdown table-cell feedback in shell and viewport navigation,
   with configurable row/column titles, data-first or title-first order, and
   an interactive speech-method selector plus manual position/dimension
@@ -75,20 +79,31 @@ repeat that selection in either direction.  Navigation does not wrap.  It
 speaks the complete selected body, preceded by a label/status where present;
 bodyless groups retain concise label and fold-state feedback.  Selecting a
 tool inside a collapsed group expands the group before moving to the tool.
-Rendered tables are also selectable, but retain the less chatty table-entry
-announcement: dimensions and the entry cell rather than every cell.
+Rendered tables and fenced source blocks are also selectable.  Tables retain
+the less chatty table-entry announcement: dimensions and the entry cell rather
+than every cell.  Source-block arrival reports only the language and line
+count; reading all of the code remains explicit.
 
 When no repeat map is active, bare `]` and `[` infer the innermost semantic
 block at point, then move to the next or previous block of that type.  A table
-nested in a response is treated as a table.  At the live shell prompt and in
-the viewport compose buffer, these keys continue to insert literal brackets.
+nested in a response is treated as a table, and a fenced block is treated as
+source.  At the live shell prompt and in the viewport compose buffer, these
+keys continue to insert literal brackets.
 
 Agent-shell currently exposes generic next/previous block navigation but no
 public semantic block-type field.  The compatibility adapter therefore infers
 type from `agent-shell-ui-state` qualified IDs and group metadata, with prompt,
-viewport, and rendered-table properties as fallbacks.  Keep this inference
-isolated and replace it with a public semantic accessor if agent-shell adds
-one.
+viewport, rendered-table, and rendered-source properties as fallbacks.  Keep
+this inference isolated and replace it with a public semantic accessor if
+agent-shell adds one.
+
+### Markdown Source Block Keys
+
+Source navigation lands on the first character of code and expands a collapsed
+parent group when necessary.  It does not wrap.  `C-c C-b` reads the complete
+source block at point; `C-c C-y` copies its body without fences through
+agent-shell's public copy command.  Agent-shell's existing `RET` action on the
+language label remains available for copying.
 
 ### Markdown Table Keys
 
