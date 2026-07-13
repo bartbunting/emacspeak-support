@@ -38,7 +38,8 @@ Completed so far:
 - semantic Markdown table-cell feedback in shell and viewport navigation,
   with configurable row/column titles, data-first or title-first order, and
   an interactive speech-method selector plus manual position/dimension
-  context and directional table-entry announcements; and
+  context, directional table-entry announcements, and logical whole-row and
+  whole-column reading; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
@@ -97,8 +98,8 @@ remaining compatibility failures are still open Phase 0/1 work.
 - grouped tool calls, status transitions, tool diffs, and failures;
 - fragment summary/body navigation, fold state, and fold-all commands;
 - Markdown headings, links, inline/source code, and blockquotes;
-- whole-row/column reading beyond the implemented table entry, cell
-  navigation, title context, and manual coordinates;
+- table search, filtered row/column reading, and cell copying beyond the
+  implemented table entry, navigation, context, and whole-row/column speech;
 - viewport item/page navigation, compose/cancel/peek, replies, history, and
   prompt queue management;
 - exact model, session-mode, thought-level, and config-option values;

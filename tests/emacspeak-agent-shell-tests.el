@@ -71,7 +71,11 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-select-speaking-method
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-speak-column
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-context
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-speak-row
                   "emacspeak-agent-shell" ())
 
 (declare-function agent-shell--make-permission-button
@@ -1077,6 +1081,99 @@ DIRECTION is `forward' or `backward'."
       (emacspeak-agent-shell-test--table-entry
        (nth 0 case) (nth 1 case) (nth 2 case))
       (list (nth 3 case) (nth 4 case))))))
+
+(ert-deftest emacspeak-agent-shell-table-row-speech-respects-title-settings ()
+  "Logical row speech should announce a row title once and format each cell."
+  (emacspeak-agent-shell-test--with-rendered-table
+      (concat "| Name | Role | Notes |\n"
+              "|---|---|---|\n"
+              "| Alice | Engineer | Builds |\n"
+              "| Bob | Reviewer | Checks |\n")
+    (goto-char (point-min))
+    (search-forward "Engineer")
+    (backward-char (length "Engineer"))
+    (dolist (case
+             '(((column row) first
+                "Alice. Engineer, Role. Builds, Notes.")
+               ((column row) last
+                "Alice. Role, Engineer. Notes, Builds.")
+               ((column) first
+                "Alice, Name. Engineer, Role. Builds, Notes.")
+               (nil first "Alice. Engineer. Builds.")))
+      (let ((emacspeak-agent-shell-table-titles (nth 0 case))
+            (emacspeak-agent-shell-table-data-position (nth 1 case)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'emacspeak-agent-shell-table-speak-row))
+          `((icon item) (speak ,(nth 2 case)))))))))
+
+(ert-deftest emacspeak-agent-shell-table-column-speech-respects-title-settings ()
+  "Logical column speech should announce its title once and format each row."
+  (emacspeak-agent-shell-test--with-rendered-table
+      (concat "| Name | Role | Notes |\n"
+              "|---|---|---|\n"
+              "| Alice | Engineer | Builds |\n"
+              "| Bob | Reviewer | Checks |\n")
+    (goto-char (point-min))
+    (search-forward "Engineer")
+    (backward-char (length "Engineer"))
+    (dolist (case
+             '(((column row) first
+                "Role. Engineer, Alice. Reviewer, Bob.")
+               ((column row) last
+                "Role. Alice, Engineer. Bob, Reviewer.")
+               ((column) first "Role. Engineer. Reviewer.")
+               ((row) first "Engineer, Alice. Reviewer, Bob.")
+               (nil first "Engineer. Reviewer.")))
+      (let ((emacspeak-agent-shell-table-titles (nth 0 case))
+            (emacspeak-agent-shell-table-data-position (nth 1 case)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'emacspeak-agent-shell-table-speak-column))
+          `((icon item) (speak ,(nth 2 case)))))))))
+
+(ert-deftest emacspeak-agent-shell-table-row-column-handle-table-kinds ()
+  "Row and column speech should handle header rows and headerless tables."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| Name | Role | Notes |\n|---|---|---|\n| Alice | Engineer | Builds |\n"
+      (goto-char (point-min))
+      (search-forward "Role")
+      (backward-char (length "Role"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-speak-row))
+        '((icon item) (speak "Header row. Name. Role. Notes.")))))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "| hello | world |\n| goodbye | moon |\n"
+      (goto-char (point-min))
+      (search-forward "world")
+      (backward-char (length "world"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-speak-row))
+        '((icon item) (speak "hello. world."))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-speak-column))
+        '((icon item)
+          (speak "world, hello. moon, goodbye.")))))))
+
+(ert-deftest emacspeak-agent-shell-table-row-column-reject-outside-table ()
+  "Manual row and column commands should remain silent outside tables."
+  (with-temp-buffer
+    (insert "outside")
+    (dolist (command '(emacspeak-agent-shell-table-speak-row
+                       emacspeak-agent-shell-table-speak-column))
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (should-error (call-interactively command) :type 'user-error))))))
 
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."

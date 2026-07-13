@@ -781,6 +781,7 @@ Markdown renderer."
                :column-count
                (apply #'max 0 (mapcar #'length all-rows))
                :column-titles-p column-titles-p
+               :rows all-rows
                :column-title
                (when column-titles-p
                  (nth column-index (car all-rows)))
@@ -878,6 +879,81 @@ Markdown renderer."
       (progn
         (emacspeak-icon 'item)
         (dtk-speak (emacspeak-agent-shell--table-context-speech cell)))
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell--table-leading-title-speech (title face)
+  "Format leading table TITLE with FACE, or return nil when it is blank."
+  (when-let ((title (emacspeak-agent-shell--table-title title face "")))
+    (concat title ".")))
+
+(defun emacspeak-agent-shell--table-row-speech (cell)
+  "Format the logical table row containing semantic CELL."
+  (let* ((rows (plist-get cell :rows))
+         (row-index (plist-get cell :row-index))
+         (row (nth row-index rows))
+         (column-titles-p (plist-get cell :column-titles-p))
+         (header-row-p (and column-titles-p (zerop row-index)))
+         (row-title
+          (when (and (not header-row-p)
+                     (memq 'row emacspeak-agent-shell-table-titles))
+            (emacspeak-agent-shell--table-leading-title-speech
+             (car row) 'italic)))
+         (first-column (if row-title 1 0))
+         entries)
+    (when header-row-p
+      (push "Header row." entries))
+    (when row-title
+      (push row-title entries))
+    (cl-loop
+     for data in (nthcdr first-column row)
+     for column from first-column
+     do
+     (push
+      (emacspeak-agent-shell--table-cell-speech
+       (list :data data
+             :column-title
+             (when column-titles-p (nth column (car rows)))))
+      entries))
+    (string-join (nreverse entries) " ")))
+
+(defun emacspeak-agent-shell--table-column-speech (cell)
+  "Format the logical table column containing semantic CELL."
+  (let* ((rows (plist-get cell :rows))
+         (column (plist-get cell :column-index))
+         (column-titles-p (plist-get cell :column-titles-p))
+         (column-title
+          (when (and column-titles-p
+                     (memq 'column emacspeak-agent-shell-table-titles))
+            (emacspeak-agent-shell--table-leading-title-speech
+             (nth column (car rows)) 'bold)))
+         (data-rows (if column-titles-p (cdr rows) rows))
+         entries)
+    (when column-title
+      (push column-title entries))
+    (dolist (row data-rows)
+      (push
+       (emacspeak-agent-shell--table-cell-speech
+        (list :data (nth column row)
+              :row-title (car row)))
+       entries))
+    (string-join (nreverse entries) " ")))
+
+(defun emacspeak-agent-shell-table-speak-row ()
+  "Speak the logical Markdown table row at point."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (progn
+        (emacspeak-icon 'item)
+        (dtk-speak (emacspeak-agent-shell--table-row-speech cell)))
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-speak-column ()
+  "Speak the logical Markdown table column at point."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (progn
+        (emacspeak-icon 'item)
+        (dtk-speak (emacspeak-agent-shell--table-column-speech cell)))
     (user-error "Not in a rendered Markdown table")))
 
 (defun emacspeak-agent-shell--table-settings-speech ()
