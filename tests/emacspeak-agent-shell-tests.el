@@ -15,6 +15,25 @@
 (require 'subr-x)
 (require 'emacspeak-agent-shell)
 
+(defvar emacspeak-agent-shell--advice-list)
+(defvar emacspeak-agent-shell--permission-subscription)
+(defvar emacspeak-agent-shell-speak-permissions)
+
+(declare-function emacspeak-agent-shell--execute-delayed-speech
+                  "emacspeak-agent-shell" (buffer qualified-ids))
+(declare-function emacspeak-agent-shell--handle-permission-request
+                  "emacspeak-agent-shell" (event))
+(declare-function emacspeak-agent-shell--permission-event-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--permission-event-setup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--speak-content
+                  "emacspeak-agent-shell" (content block-type))
+(declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-speech-setup
+                  "emacspeak-agent-shell" ())
+
 (defconst emacspeak-agent-shell-test--agent-shell-directory
   (file-name-as-directory
    (expand-file-name
@@ -24,24 +43,25 @@
 (defmacro emacspeak-agent-shell-test--capture-events (&rest body)
   "Run BODY and return ordered speech, stop, icon, and message events."
   (declare (indent 0) (debug t))
-  `(let ((events nil))
-     (cl-letf (((symbol-function 'dtk-speak)
-                (lambda (text)
-                  (push (list 'speak text) events)))
-               ((symbol-function 'dtk-stop)
-                (lambda (&optional all)
-                  (push (list 'stop all) events)))
-               ((symbol-function 'emacspeak-icon)
-                (lambda (icon)
-                  (push (list 'icon icon) events)))
-               ((symbol-function 'message)
-                (lambda (format-string &rest arguments)
-                  (push (list 'message
-                              (apply #'format-message
-                                     format-string arguments))
-                        events))))
-       ,@body
-       (nreverse events))))
+  (let ((event-log (make-symbol "event-log")))
+    `(let ((,event-log nil))
+       (cl-letf (((symbol-function 'dtk-speak)
+                  (lambda (text)
+                    (push (list 'speak text) ,event-log)))
+                 ((symbol-function 'dtk-stop)
+                  (lambda (&optional all)
+                    (push (list 'stop all) ,event-log)))
+                 ((symbol-function 'emacspeak-icon)
+                  (lambda (icon)
+                    (push (list 'icon icon) ,event-log)))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest arguments)
+                    (push (list 'message
+                                (apply #'format-message
+                                       format-string arguments))
+                          ,event-log))))
+         ,@body
+         (nreverse ,event-log)))))
 
 (defun emacspeak-agent-shell-test--speak-pending (entries)
   "Speak pending ENTRIES and return captured events.
@@ -100,26 +120,45 @@ ENTRIES is an alist of qualified block IDs to body strings."
                  update-type)))
    (emacspeak-agent-shell-test--read-traffic filename)))
 
-(defun emacspeak-agent-shell-test--permission-entry (request)
-  "Convert fixture permission REQUEST to a pending speech entry."
+(defun emacspeak-agent-shell-test--permission-event (request)
+  "Convert fixture permission REQUEST to a public agent-shell event."
   (let* ((object (map-elt request :object))
          (tool-call (map-nested-elt object '(params toolCall)))
          (tool-call-id (map-elt tool-call 'toolCallId))
          (title (map-elt tool-call 'title))
          (options (append (map-nested-elt object '(params options)) nil))
-         (choices (mapcar (lambda (option)
-                            (map-elt option 'name))
-                          options))
-         (body (string-join (cons title choices) "\n")))
-    (cons (format "fixture-permission-%s" tool-call-id) body)))
+         (actions (agent-shell--make-permission-actions options)))
+    (list
+     (cons :event 'permission-request)
+     (cons :data
+           (list (cons :tool-call-id tool-call-id)
+                 (cons :tool-call
+                       (list (cons :title title)
+                             (cons :permission-actions actions))))))))
 
-(defun emacspeak-agent-shell-test--permission-events (entries)
-  "Return the desired permission announcement events for ENTRIES."
+(defun emacspeak-agent-shell-test--expected-permission-events (events)
+  "Return the desired speech events for permission EVENTS."
   (apply #'append
-         (mapcar (lambda (entry)
-                   (list (list 'icon 'warn-user)
-                         (list 'speak (cdr entry))))
-                 entries)))
+         (mapcar
+          (lambda (event)
+            (let* ((tool-call (map-nested-elt event '(:data :tool-call)))
+                   (title (map-elt tool-call :title))
+                   (actions (map-elt tool-call :permission-actions))
+                   (choices
+                    (cl-loop
+                     for action in actions
+                     for index from 1
+                     collect (format "Choice %d: %s."
+                                     index (map-elt action :option)))))
+              (list (list 'stop nil)
+                    (list 'icon 'warn-user)
+                    (list 'speak
+                          (string-join
+                           (append (list (format "Permission request. %s."
+                                                      title))
+                                   choices)
+                           " ")))))
+          events)))
 
 (defun emacspeak-agent-shell-test--saved-advice-state ()
   "Return active state for each configured agent-shell advice target."
@@ -191,30 +230,111 @@ ENTRIES is an alist of qualified block IDs to body strings."
       (emacspeak-agent-shell-test--restore-advice-state saved-advice))))
 
 (ert-deftest emacspeak-agent-shell-permission-fixture-is-urgent ()
-  "A fixture permission should be classified and spoken in full."
-  :expected-result :failed
+  "A fixture permission should interrupt and be spoken in full."
   (let* ((requests
           (emacspeak-agent-shell-test--permission-requests
            "gemini-permission.traffic"))
-         (entries (mapcar #'emacspeak-agent-shell-test--permission-entry
-                          requests)))
-    (should (= 1 (length entries)))
+         (events (mapcar #'emacspeak-agent-shell-test--permission-event
+                         requests)))
+    (should (= 1 (length events)))
     (should
-     (equal (emacspeak-agent-shell-test--speak-pending entries)
-            (emacspeak-agent-shell-test--permission-events entries)))))
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (dolist (event events)
+          (emacspeak-agent-shell--handle-permission-request event)))
+      (emacspeak-agent-shell-test--expected-permission-events events)))))
 
 (ert-deftest emacspeak-agent-shell-multiple-permission-fixture-is-complete ()
   "Each permission in a fixture should get a complete announcement."
-  :expected-result :failed
   (let* ((requests
           (emacspeak-agent-shell-test--permission-requests
            "gemini-multiple-permissions.traffic"))
-         (entries (mapcar #'emacspeak-agent-shell-test--permission-entry
-                          requests)))
-    (should (= 2 (length entries)))
+         (events (mapcar #'emacspeak-agent-shell-test--permission-event
+                         requests)))
+    (should (= 2 (length events)))
     (should
-     (equal (emacspeak-agent-shell-test--speak-pending entries)
-            (emacspeak-agent-shell-test--permission-events entries)))))
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (dolist (event events)
+          (emacspeak-agent-shell--handle-permission-request event)))
+      (emacspeak-agent-shell-test--expected-permission-events events)))))
+
+(ert-deftest emacspeak-agent-shell-permission-subscription-is-idempotent ()
+  "The public permission subscription should install once and clean up."
+  (let ((buffer (generate-new-buffer " *agent-shell-permission-test*"))
+        timer)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local agent-shell--state
+                      (list (cons :buffer buffer)
+                            (cons :event-subscriptions nil)))
+          (let* ((request
+                  (car (emacspeak-agent-shell-test--permission-requests
+                        "gemini-permission.traffic")))
+                 (event
+                  (emacspeak-agent-shell-test--permission-event request))
+                 (data (map-elt event :data)))
+            (emacspeak-agent-shell--permission-event-setup)
+            (let ((token emacspeak-agent-shell--permission-subscription))
+              (emacspeak-agent-shell--permission-event-setup)
+              (should (equal token
+                             emacspeak-agent-shell--permission-subscription))
+              (should (= 1 (length (map-elt
+                                    agent-shell--state
+                                    :event-subscriptions)))))
+            (setq timer (run-with-timer 3600 nil #'ignore))
+            (setq-local emacspeak-agent-shell--pending-speech-timer timer
+                        emacspeak-agent-shell--pending-speech-qualified-ids
+                        '("fixture-permission"))
+            (setq-local emacspeak-agent-shell--pending-bodies
+                        (make-hash-table :test #'equal))
+            (puthash "fixture-permission" "duplicate"
+                     emacspeak-agent-shell--pending-bodies)
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (cl-letf (((symbol-function
+                            'agent-shell--sync-system-sleep)
+                           #'ignore))
+                  (agent-shell--emit-event
+                   :event 'permission-request :data data)))
+              (emacspeak-agent-shell-test--expected-permission-events
+               (list event))))
+            (should-not emacspeak-agent-shell--pending-speech-timer)
+            (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+            (should (= 0 (hash-table-count
+                          emacspeak-agent-shell--pending-bodies)))
+            (emacspeak-agent-shell--permission-event-cleanup)
+            (should-not emacspeak-agent-shell--permission-subscription)
+            (should-not (map-elt agent-shell--state
+                                 :event-subscriptions))))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-permission-announcement-can-be-disabled ()
+  "Disabling permission speech should also suppress the delayed duplicate."
+  (let ((emacspeak-agent-shell-speak-permissions nil))
+    (with-temp-buffer
+      (setq-local emacspeak-agent-shell--pending-bodies
+                  (make-hash-table :test #'equal))
+      (puthash "fixture-permission" "duplicate"
+               emacspeak-agent-shell--pending-bodies)
+      (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                  '("fixture-permission"))
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell--handle-permission-request
+          '((:event . permission-request)
+            (:data (:tool-call-id . "tool-id")
+                   (:tool-call (:title . "Run command")
+                               (:permission-actions
+                                ((:option . "Allow")))))))))
+      (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+      (should (= 0 (hash-table-count
+                    emacspeak-agent-shell--pending-bodies))))))
 
 (ert-deftest emacspeak-agent-shell-unknown-block-uses-fallback ()
   "Unknown non-empty content should reach the fallback speaker."

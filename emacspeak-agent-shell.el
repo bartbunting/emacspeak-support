@@ -204,6 +204,9 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-bodies)
 
+(defvar-local emacspeak-agent-shell--permission-subscription nil
+  "Subscription token for permission request events in this shell.")
+
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
 When agent output streams in chunks, wait this long after the last
@@ -216,6 +219,82 @@ chunk arrives before speaking the complete text."
   (cl-declare (special emacspeak-comint-autospeak))
   (with-current-buffer buffer
     emacspeak-comint-autospeak))
+
+(defun emacspeak-agent-shell--cancel-pending-speech ()
+  "Cancel and discard delayed speech pending in the current shell."
+  (when (timerp emacspeak-agent-shell--pending-speech-timer)
+    (cancel-timer emacspeak-agent-shell--pending-speech-timer))
+  (setq emacspeak-agent-shell--pending-speech-timer nil
+        emacspeak-agent-shell--pending-speech-qualified-ids nil)
+  (when (hash-table-p emacspeak-agent-shell--pending-bodies)
+    (clrhash emacspeak-agent-shell--pending-bodies)))
+
+(defun emacspeak-agent-shell--permission-announcement (event)
+  "Return a semantic announcement for permission request EVENT."
+  (let* ((data (map-elt event :data))
+         (tool-call (map-elt data :tool-call))
+         (tool-call-id (map-elt data :tool-call-id))
+         (title (map-elt tool-call :title))
+         (description
+          (cond
+           ((and (stringp title) (not (string-empty-p title)))
+            (substring-no-properties title))
+           ((and (stringp tool-call-id)
+                 (not (string-empty-p tool-call-id)))
+            (format "Tool %s" tool-call-id))
+           (t "Unknown tool")))
+         (choices
+          (cl-loop
+           for action in (append (map-elt tool-call :permission-actions) nil)
+           for option = (map-elt action :option)
+           when (and (stringp option) (not (string-empty-p option)))
+           collect (substring-no-properties option))))
+    (concat
+     (format "Permission request. %s." description)
+     (when choices
+       (concat
+        " "
+        (mapconcat
+         #'identity
+         (cl-loop
+          for choice in choices
+          for index from 1
+          collect (format "Choice %d: %s." index choice))
+         " "))))))
+
+(defun emacspeak-agent-shell--handle-permission-request (event)
+  "Interrupt current speech and announce permission request EVENT."
+  ;; The private fragment advice has already seen the visual permission
+  ;; block.  Discard that delayed copy to avoid a duplicate announcement.
+  (emacspeak-agent-shell--cancel-pending-speech)
+  (when emacspeak-agent-shell-speak-permissions
+    (dtk-stop)
+    (emacspeak-icon 'warn-user)
+    (dtk-speak (emacspeak-agent-shell--permission-announcement event))))
+
+(defun emacspeak-agent-shell--permission-event-setup ()
+  "Subscribe the current agent-shell buffer to permission requests."
+  (unless emacspeak-agent-shell--permission-subscription
+    (setq emacspeak-agent-shell--permission-subscription
+          (agent-shell-subscribe-to
+           :shell-buffer (current-buffer)
+           :event 'permission-request
+           :on-event #'emacspeak-agent-shell--handle-permission-request)))
+  (add-hook 'kill-buffer-hook
+            #'emacspeak-agent-shell--permission-event-cleanup nil t)
+  (add-hook 'change-major-mode-hook
+            #'emacspeak-agent-shell--permission-event-cleanup nil t))
+
+(defun emacspeak-agent-shell--permission-event-cleanup ()
+  "Remove the current buffer's permission request subscription."
+  (when emacspeak-agent-shell--permission-subscription
+    (agent-shell-unsubscribe
+     :subscription emacspeak-agent-shell--permission-subscription)
+    (setq emacspeak-agent-shell--permission-subscription nil))
+  (remove-hook 'kill-buffer-hook
+               #'emacspeak-agent-shell--permission-event-cleanup t)
+  (remove-hook 'change-major-mode-hook
+               #'emacspeak-agent-shell--permission-event-cleanup t))
 
 (defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
   "Execute delayed speech of blocks identified by QUALIFIED-IDS in BUFFER.
@@ -557,6 +636,12 @@ do not stack earcons."
     (ad-enable-advice (car advice) (cadr advice) 'emacspeak)
     (ad-activate (car advice)))
   (add-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
+  (add-hook 'agent-shell-mode-hook
+            #'emacspeak-agent-shell--permission-event-setup)
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'agent-shell-mode)
+        (emacspeak-agent-shell--permission-event-setup))))
   (message "Enabled Emacspeak agent-shell support"))
 
 (defun emacspeak-agent-shell-disable ()
@@ -566,6 +651,13 @@ do not stack earcons."
     (ad-disable-advice (car advice) (cadr advice) 'emacspeak)
     (ad-activate (car advice)))
   (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--permission-event-setup)
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'agent-shell-mode)
+                 emacspeak-agent-shell--permission-subscription)
+        (emacspeak-agent-shell--permission-event-cleanup))))
   (message "Disabled Emacspeak agent-shell support"))
 
 (provide 'emacspeak-agent-shell)
