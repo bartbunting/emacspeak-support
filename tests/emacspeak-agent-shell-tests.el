@@ -22,6 +22,9 @@
 (defvar emacspeak-agent-shell--permission-subscription)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
+(defvar emacspeak-agent-shell--table-navigation-active)
+(defvar emacspeak-agent-shell--table-navigation-map)
+(defvar emacspeak-agent-shell--table-navigation-table-start)
 (defvar emacspeak-agent-shell-processing-end-icon)
 (defvar emacspeak-agent-shell-processing-start-icon)
 (defvar emacspeak-agent-shell-signal-processing)
@@ -30,6 +33,8 @@
 (defvar emacspeak-agent-shell-table-data-position)
 (defvar emacspeak-agent-shell-table-titles)
 (defvar emacspeak-agent-shell-tool-output-verbosity)
+(defvar agent-shell-viewport-edit-mode-hook)
+(defvar agent-shell-viewport-view-mode-hook)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
                   "emacspeak-agent-shell" (buffer qualified-ids))
@@ -65,6 +70,14 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--table-cell-feedback
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-navigation-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-navigation-post-command
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-navigation-pre-command
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--table-navigation-setup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
@@ -73,9 +86,25 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-copy-cell
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-exit-backward
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-exit-forward
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-next-column
+                  "emacspeak-agent-shell" (&optional count))
+(declare-function emacspeak-agent-shell-table-next-row
+                  "emacspeak-agent-shell" (&optional count))
+(declare-function emacspeak-agent-shell-table-previous-column
+                  "emacspeak-agent-shell" (&optional count))
+(declare-function emacspeak-agent-shell-table-previous-row
+                  "emacspeak-agent-shell" (&optional count))
+(declare-function emacspeak-agent-shell-table-speak-cell
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-column
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-context
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-speak-dimensions
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-speak-row
                   "emacspeak-agent-shell" ())
@@ -399,6 +428,8 @@ DIRECTION is `forward' or `backward'."
 (ert-deftest emacspeak-agent-shell-enable-disable-manages-current-targets ()
   "Enable and disable should manage the hook and existing advice targets."
   (let ((saved-hook agent-shell-mode-hook)
+        (saved-viewport-edit-hook agent-shell-viewport-edit-mode-hook)
+        (saved-viewport-view-hook agent-shell-viewport-view-mode-hook)
         (saved-advice (emacspeak-agent-shell-test--saved-advice-state)))
     (unwind-protect
         (progn
@@ -407,6 +438,12 @@ DIRECTION is `forward' or `backward'."
                         agent-shell-mode-hook))
           (should (memq #'emacspeak-agent-shell--buffer-setup
                         agent-shell-mode-hook))
+          (should
+           (memq #'emacspeak-agent-shell--table-navigation-setup
+                 agent-shell-viewport-edit-mode-hook))
+          (should
+           (memq #'emacspeak-agent-shell--table-navigation-setup
+                 agent-shell-viewport-view-mode-hook))
           (should-not
            (memq #'emacspeak-agent-shell--permission-event-setup
                  agent-shell-mode-hook))
@@ -424,6 +461,12 @@ DIRECTION is `forward' or `backward'."
                             agent-shell-mode-hook))
           (should-not (memq #'emacspeak-agent-shell--buffer-setup
                             agent-shell-mode-hook))
+          (should-not
+           (memq #'emacspeak-agent-shell--table-navigation-setup
+                 agent-shell-viewport-edit-mode-hook))
+          (should-not
+           (memq #'emacspeak-agent-shell--table-navigation-setup
+                 agent-shell-viewport-view-mode-hook))
           (should-not (memq #'emacspeak-agent-shell--permission-event-setup
                             agent-shell-mode-hook))
           (should-not (memq #'emacspeak-agent-shell--lifecycle-event-setup
@@ -433,6 +476,8 @@ DIRECTION is `forward' or `backward'."
           (dolist (entry emacspeak-agent-shell--advice-list)
             (should-not (ad-is-active (car entry)))))
       (setq agent-shell-mode-hook saved-hook)
+      (setq agent-shell-viewport-edit-mode-hook saved-viewport-edit-hook
+            agent-shell-viewport-view-mode-hook saved-viewport-view-hook)
       (emacspeak-agent-shell-test--restore-advice-state saved-advice))))
 
 (ert-deftest emacspeak-agent-shell-permission-fixture-is-urgent ()
@@ -1218,6 +1263,144 @@ DIRECTION is `forward' or `backward'."
           :type 'user-error)))
       (should (equal (car kill-ring) "")))))
 
+(ert-deftest emacspeak-agent-shell-table-grid-navigation-is-logical ()
+  "Grid movement should retain row/column identity across visual wrapping."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first)
+        (agent-shell-markdown-table-max-width-fraction 1.0))
+    (cl-letf (((symbol-function 'agent-shell-markdown--display-width)
+               (lambda () 38)))
+      (emacspeak-agent-shell-test--with-rendered-table
+          (concat "| Name | Role | Notes |\n"
+                  "|---|---|---|\n"
+                  "| Alice | Engineer | owns a long wrapped description |\n"
+                  "| Bob | Reviewer | Checks |\n")
+        (goto-char (point-min))
+        (search-forward "Engineer")
+        (backward-char (length "Engineer"))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively
+             #'emacspeak-agent-shell-table-next-column))
+          '((icon item)
+            (speak
+             "owns a long wrapped description, Alice, Notes."))))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'emacspeak-agent-shell-table-next-row))
+          '((icon item) (speak "Checks, Bob, Notes."))))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively
+             #'emacspeak-agent-shell-table-previous-column))
+          '((icon item) (speak "Reviewer, Bob, Role."))))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'emacspeak-agent-shell-table-previous-row))
+          '((icon item) (speak "Engineer, Alice, Role."))))))))
+
+(ert-deftest emacspeak-agent-shell-table-grid-navigation-handles-edges ()
+  "Horizontal edges should warn; vertical edges should leave the table."
+  (let ((emacspeak-agent-shell-table-titles '(column))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter\n"
+      (goto-char (point-min))
+      (search-forward "A")
+      (backward-char)
+      (let ((position (point)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively
+             #'emacspeak-agent-shell-table-previous-column))
+          '((icon warn-user) (speak "Left edge of table."))))
+        (should (= position (point))))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-previous-row))
+        '((icon close-object) (speak "Before table. before"))))
+      (should (looking-at "before"))
+      (search-forward "2")
+      (backward-char)
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (call-interactively #'emacspeak-agent-shell-table-next-row))
+        '((icon close-object) (speak "After table. after"))))
+      (should (looking-at "after")))))
+
+(ert-deftest emacspeak-agent-shell-table-explicit-exit-moves-past-table ()
+  "Meta arrow commands should leave directly in either direction."
+  (emacspeak-agent-shell-test--with-rendered-table
+      "before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter\n"
+    (goto-char (point-min))
+    (search-forward "1")
+    (backward-char)
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'emacspeak-agent-shell-table-exit-forward))
+      '((icon close-object) (speak "After table. after"))))
+    (search-backward "B")
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'emacspeak-agent-shell-table-exit-backward))
+      '((icon close-object) (speak "Before table. before"))))))
+
+(ert-deftest emacspeak-agent-shell-table-navigation-is-contextual ()
+  "Ordinary cursor entry should announce and activate table-only keys."
+  (let ((emacspeak-agent-shell-table-titles '(column row))
+        (emacspeak-agent-shell-table-data-position 'first))
+    (emacspeak-agent-shell-test--with-rendered-table
+        "before\n| Name | Role |\n|---|---|\n| Alice | Engineer |\nafter\n"
+      (goto-char (point-min))
+      (emacspeak-agent-shell--table-navigation-setup)
+      (should-not emacspeak-agent-shell--table-navigation-active)
+      (emacspeak-agent-shell--table-navigation-pre-command)
+      (search-forward "Engineer")
+      (backward-char (length "Engineer"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--table-navigation-post-command))
+        '((stop nil)
+          (icon open-object)
+          (speak
+           "Table, 1 data row, 2 columns. Engineer, Alice, Role."))))
+      (should emacspeak-agent-shell--table-navigation-active)
+      (should
+       (eq (key-binding (kbd "<right>"))
+           #'emacspeak-agent-shell-table-next-column))
+      (dolist
+          (binding
+           `(("r" . ,#'emacspeak-agent-shell-table-speak-row)
+             ("c" . ,#'emacspeak-agent-shell-table-speak-column)
+             ("SPC" . ,#'emacspeak-agent-shell-table-speak-cell)
+             ("." . ,#'emacspeak-agent-shell-table-speak-context)
+             ("=" . ,#'emacspeak-agent-shell-table-speak-dimensions)
+             ("w" . ,#'emacspeak-agent-shell-table-copy-cell)
+             ("a" . ,#'emacspeak-agent-shell-table-select-speaking-method)
+             ("M-<up>" . ,#'emacspeak-agent-shell-table-exit-backward)
+             ("M-<down>" . ,#'emacspeak-agent-shell-table-exit-forward)))
+        (should
+         (eq (lookup-key emacspeak-agent-shell--table-navigation-map
+                         (kbd (car binding)))
+             (cdr binding))))
+      (goto-char (point-max))
+      (emacspeak-agent-shell--table-navigation-post-command)
+      (should-not emacspeak-agent-shell--table-navigation-active)
+      (emacspeak-agent-shell--table-navigation-cleanup)
+      (should-not
+       (memq #'emacspeak-agent-shell--table-navigation-post-command
+             post-command-hook)))))
+
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."
   (let ((emacspeak-agent-shell-table-titles '(column row))
@@ -1447,7 +1630,10 @@ DIRECTION is `forward' or `backward'."
             (should (memq #'emacspeak-agent-shell--buffer-cleanup
                           kill-buffer-hook))
             (should (memq #'emacspeak-agent-shell--buffer-cleanup
-                          change-major-mode-hook)))
+                          change-major-mode-hook))
+            (should
+             (memq #'emacspeak-agent-shell--table-navigation-post-command
+                   post-command-hook)))
           (emacspeak-agent-shell-disable)
           (emacspeak-agent-shell-disable)
           (sit-for 0.15)
@@ -1468,7 +1654,10 @@ DIRECTION is `forward' or `backward'."
             (should-not (memq #'emacspeak-agent-shell--buffer-cleanup
                               kill-buffer-hook))
             (should-not (memq #'emacspeak-agent-shell--buffer-cleanup
-                              change-major-mode-hook))))
+                              change-major-mode-hook))
+            (should-not
+             (memq #'emacspeak-agent-shell--table-navigation-post-command
+                   post-command-hook))))
       (when (timerp timer)
         (cancel-timer timer))
       (when (buffer-live-p buffer)

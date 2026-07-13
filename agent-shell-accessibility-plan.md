@@ -40,7 +40,9 @@ Completed so far:
   an interactive speech-method selector plus manual position/dimension
   context, directional table-entry announcements, and logical whole-row and
   whole-column reading, plus logical cell copying without rendered padding or
-  borders; and
+  borders; contextual two-dimensional arrow navigation that ignores Markdown
+  separators and visual wrapping; direct row, column, cell, context,
+  dimensions, settings, and copy keys; and natural or explicit table exit; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
@@ -49,6 +51,24 @@ rendered duplicates without discarding pending agent response text.  Tool
 events likewise replace asynchronous private save advice and avoid repeating
 rendered tool output.  Idle events, background-session identity, and two
 remaining compatibility failures are still open Phase 0/1 work.
+
+### Markdown Table Keys
+
+The following contextual keys are active only while point is inside a rendered
+agent-shell Markdown table:
+
+- left/right move by logical column and up/down move by logical row;
+- `TAB` and `Shift-TAB` retain agent-shell's sequential cell navigation;
+- `r`, `c`, `SPC`, `.`, and `=` speak the row, column, cell, context, and
+  dimensions respectively;
+- `w` copies the unpadded logical cell and `a` changes table speech settings;
+  and
+- `M-Up` and `M-Down` leave directly before or after the table.  Up at the
+  first logical row and Down at the last row provide the same exit behavior.
+
+Sequential discovery of tables embedded inside response blocks and clean
+`TAB`/`Shift-TAB` exit at the first and last cells remain the next navigation
+slice.
 
 ## Findings
 

@@ -237,6 +237,15 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 (defvar-local emacspeak-agent-shell--tool-call-status-cache nil
   "Hash table mapping tool call IDs to their last announced status.")
 
+(defvar-local emacspeak-agent-shell--table-navigation-active nil
+  "Non-nil when contextual Markdown table keys are active.")
+
+(defvar-local emacspeak-agent-shell--table-navigation-table-start nil
+  "Start position of the rendered table currently being navigated.")
+
+(defvar-local emacspeak-agent-shell--table-navigation-origin nil
+  "Point before the command most recently tracked for table entry.")
+
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
 When agent output streams in chunks, wait this long after the last
@@ -865,6 +874,8 @@ Markdown renderer."
                (emacspeak-agent-shell--markdown-table-cell-starts region)))
     (goto-char (if (eq direction 'forward) (car starts) (car (last starts))))
     (when-let* ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (setq emacspeak-agent-shell--table-navigation-active t
+            emacspeak-agent-shell--table-navigation-table-start (car region))
       (emacspeak-icon 'open-object)
       (dtk-speak
        (concat (emacspeak-agent-shell--table-dimensions-speech cell)
@@ -879,6 +890,21 @@ Markdown renderer."
       (progn
         (emacspeak-icon 'item)
         (dtk-speak (emacspeak-agent-shell--table-context-speech cell)))
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-speak-cell ()
+  "Speak the logical Markdown table cell at point."
+  (interactive)
+  (unless (emacspeak-agent-shell--table-cell-feedback)
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-speak-dimensions ()
+  "Speak the dimensions of the Markdown table at point."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (progn
+        (emacspeak-icon 'item)
+        (dtk-speak (emacspeak-agent-shell--table-dimensions-speech cell)))
     (user-error "Not in a rendered Markdown table")))
 
 (defun emacspeak-agent-shell--table-leading-title-speech (title face)
@@ -971,6 +997,227 @@ logical value of a wrapped cell."
         (emacspeak-icon 'save-object)
         (dtk-speak "Copied table cell."))
     (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell--table-cell-position (cell row column)
+  "Return the rendered position for ROW and COLUMN relative to CELL.
+Return nil when that logical cell does not exist."
+  (let* ((rows (plist-get cell :rows))
+         (region (emacspeak-agent-shell--markdown-table-region-at-point))
+         (starts
+          (and region
+               (emacspeak-agent-shell--markdown-table-cell-starts region)))
+         (target-row (nth row rows)))
+    (when (and target-row (<= 0 column) (< column (length target-row)))
+      (nth (+ column
+              (apply #'+ (mapcar #'length (seq-take rows row))))
+           starts))))
+
+(defun emacspeak-agent-shell--table-boundary-feedback (message)
+  "Play a boundary cue and speak MESSAGE."
+  (emacspeak-icon 'warn-user)
+  (dtk-speak message))
+
+(defun emacspeak-agent-shell--table-exit-destination (region direction)
+  "Return a useful point outside table REGION in DIRECTION."
+  (pcase direction
+    ('backward
+     (when (> (car region) (point-min))
+       (save-excursion
+         (goto-char (car region))
+         (backward-char 1)
+         (skip-chars-backward " \t\n\r")
+         (beginning-of-line)
+         (back-to-indentation)
+         (point))))
+    ('forward
+     (when (< (cdr region) (point-max))
+       (save-excursion
+         (goto-char (cdr region))
+         (skip-chars-forward " \t\n\r")
+         (back-to-indentation)
+         (point))))))
+
+(defun emacspeak-agent-shell--table-exit (direction)
+  "Leave the rendered table at point in DIRECTION and speak the destination."
+  (if-let* ((region (emacspeak-agent-shell--markdown-table-region-at-point))
+            (destination
+             (emacspeak-agent-shell--table-exit-destination region direction)))
+      (progn
+        (goto-char destination)
+        (setq emacspeak-agent-shell--table-navigation-active nil
+              emacspeak-agent-shell--table-navigation-table-start nil)
+        (emacspeak-icon 'close-object)
+        (let ((line
+               (string-trim
+                (buffer-substring-no-properties
+                 (line-beginning-position) (line-end-position)))))
+          (dtk-speak
+           (format "%s table.%s"
+                   (if (eq direction 'backward) "Before" "After")
+                   (if (string-empty-p line) "" (concat " " line))))))
+    (emacspeak-agent-shell--table-boundary-feedback
+     (format "No content %s table."
+             (if (eq direction 'backward) "before" "after")))))
+
+(defun emacspeak-agent-shell-table-exit-backward ()
+  "Leave the current Markdown table and move to preceding content."
+  (interactive)
+  (emacspeak-agent-shell--table-exit 'backward))
+
+(defun emacspeak-agent-shell-table-exit-forward ()
+  "Leave the current Markdown table and move to following content."
+  (interactive)
+  (emacspeak-agent-shell--table-exit 'forward))
+
+(defun emacspeak-agent-shell--table-move (row-delta column-delta)
+  "Move by ROW-DELTA and COLUMN-DELTA in the logical table at point."
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (let* ((row (plist-get cell :row-index))
+             (column (plist-get cell :column-index))
+             (rows (plist-get cell :rows))
+             (target-row (+ row row-delta))
+             (target-column (+ column column-delta)))
+        (cond
+         ((< target-row 0)
+          (emacspeak-agent-shell--table-exit 'backward))
+         ((>= target-row (length rows))
+          (emacspeak-agent-shell--table-exit 'forward))
+         ((< target-column 0)
+          (emacspeak-agent-shell--table-boundary-feedback
+           "Left edge of table."))
+         ((>= target-column (length (nth target-row rows)))
+          (emacspeak-agent-shell--table-boundary-feedback
+           (if (zerop row-delta)
+               "Right edge of table."
+             "No cell in that row.")))
+         (t
+          (if-let ((target
+                    (emacspeak-agent-shell--table-cell-position
+                     cell target-row target-column)))
+              (progn
+                (goto-char target)
+                (emacspeak-agent-shell--table-cell-feedback))
+            (emacspeak-agent-shell--table-boundary-feedback
+             "No rendered cell at that position.")))))
+    (user-error "Not in a rendered Markdown table")))
+
+(defun emacspeak-agent-shell-table-next-column (&optional count)
+  "Move COUNT columns right in the current logical Markdown table row."
+  (interactive "p")
+  (emacspeak-agent-shell--table-move 0 (or count 1)))
+
+(defun emacspeak-agent-shell-table-previous-column (&optional count)
+  "Move COUNT columns left in the current logical Markdown table row."
+  (interactive "p")
+  (emacspeak-agent-shell--table-move 0 (- (or count 1))))
+
+(defun emacspeak-agent-shell-table-next-row (&optional count)
+  "Move COUNT logical Markdown table rows down, retaining the column."
+  (interactive "p")
+  (emacspeak-agent-shell--table-move (or count 1) 0))
+
+(defun emacspeak-agent-shell-table-previous-row (&optional count)
+  "Move COUNT logical Markdown table rows up, retaining the column."
+  (interactive "p")
+  (emacspeak-agent-shell--table-move (- (or count 1)) 0))
+
+(defvar emacspeak-agent-shell--table-navigation-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "<right>")
+                #'emacspeak-agent-shell-table-next-column)
+    (define-key map (kbd "<left>")
+                #'emacspeak-agent-shell-table-previous-column)
+    (define-key map (kbd "<down>") #'emacspeak-agent-shell-table-next-row)
+    (define-key map (kbd "<up>") #'emacspeak-agent-shell-table-previous-row)
+    (define-key map (kbd "M-<up>")
+                #'emacspeak-agent-shell-table-exit-backward)
+    (define-key map (kbd "M-<down>")
+                #'emacspeak-agent-shell-table-exit-forward)
+    (define-key map (kbd "r") #'emacspeak-agent-shell-table-speak-row)
+    (define-key map (kbd "c") #'emacspeak-agent-shell-table-speak-column)
+    (define-key map (kbd "SPC") #'emacspeak-agent-shell-table-speak-cell)
+    (define-key map (kbd ".") #'emacspeak-agent-shell-table-speak-context)
+    (define-key map (kbd "=") #'emacspeak-agent-shell-table-speak-dimensions)
+    (define-key map (kbd "w") #'emacspeak-agent-shell-table-copy-cell)
+    (define-key map (kbd "a")
+                #'emacspeak-agent-shell-table-select-speaking-method)
+    map)
+  "Contextual keymap active while point is in a rendered Markdown table.")
+
+(unless (assq 'emacspeak-agent-shell--table-navigation-active
+              minor-mode-map-alist)
+  (push (cons 'emacspeak-agent-shell--table-navigation-active
+              emacspeak-agent-shell--table-navigation-map)
+        minor-mode-map-alist))
+
+(defun emacspeak-agent-shell--table-navigation-entry-feedback (direction)
+  "Announce entry at point, falling back to table edge in DIRECTION."
+  (if-let* ((region (emacspeak-agent-shell--markdown-table-region-at-point))
+            (cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (progn
+        (setq emacspeak-agent-shell--table-navigation-active t
+              emacspeak-agent-shell--table-navigation-table-start
+              (car region))
+        (emacspeak-icon 'open-object)
+        (dtk-speak
+         (concat (emacspeak-agent-shell--table-dimensions-speech cell)
+                 " "
+                 (emacspeak-agent-shell--table-cell-speech cell))))
+    (emacspeak-agent-shell--table-entry-feedback direction)))
+
+(defun emacspeak-agent-shell--table-navigation-pre-command ()
+  "Remember point before a possible contextual table entry."
+  (setq emacspeak-agent-shell--table-navigation-origin (point)))
+
+(defun emacspeak-agent-shell--table-navigation-post-command ()
+  "Track table entry and toggle the contextual table keymap."
+  (let* ((region (emacspeak-agent-shell--markdown-table-region-at-point))
+         (table-start (and region (car region))))
+    (cond
+     ((not region)
+      (setq emacspeak-agent-shell--table-navigation-active nil
+            emacspeak-agent-shell--table-navigation-table-start nil))
+     ((not (equal table-start
+                  emacspeak-agent-shell--table-navigation-table-start))
+      (setq emacspeak-agent-shell--table-navigation-active t)
+      (dtk-stop)
+      (emacspeak-agent-shell--table-navigation-entry-feedback
+       (if (and emacspeak-agent-shell--table-navigation-origin
+                (< (point) emacspeak-agent-shell--table-navigation-origin))
+           'backward
+         'forward)))
+     (t
+      (setq emacspeak-agent-shell--table-navigation-active t)))))
+
+(defun emacspeak-agent-shell--table-navigation-setup ()
+  "Install contextual Markdown table navigation in the current buffer."
+  (add-hook 'pre-command-hook
+            #'emacspeak-agent-shell--table-navigation-pre-command nil t)
+  (add-hook 'post-command-hook
+            #'emacspeak-agent-shell--table-navigation-post-command nil t)
+  (add-hook 'kill-buffer-hook
+            #'emacspeak-agent-shell--table-navigation-cleanup nil t)
+  (add-hook 'change-major-mode-hook
+            #'emacspeak-agent-shell--table-navigation-cleanup nil t)
+  (if-let ((region (emacspeak-agent-shell--markdown-table-region-at-point)))
+      (setq emacspeak-agent-shell--table-navigation-active t
+            emacspeak-agent-shell--table-navigation-table-start (car region))
+    (setq emacspeak-agent-shell--table-navigation-active nil
+          emacspeak-agent-shell--table-navigation-table-start nil)))
+
+(defun emacspeak-agent-shell--table-navigation-cleanup ()
+  "Remove contextual Markdown table navigation from the current buffer."
+  (setq emacspeak-agent-shell--table-navigation-active nil
+        emacspeak-agent-shell--table-navigation-table-start nil
+        emacspeak-agent-shell--table-navigation-origin nil)
+  (remove-hook 'pre-command-hook
+               #'emacspeak-agent-shell--table-navigation-pre-command t)
+  (remove-hook 'post-command-hook
+               #'emacspeak-agent-shell--table-navigation-post-command t)
+  (remove-hook 'kill-buffer-hook
+               #'emacspeak-agent-shell--table-navigation-cleanup t)
+  (remove-hook 'change-major-mode-hook
+               #'emacspeak-agent-shell--table-navigation-cleanup t))
 
 (defun emacspeak-agent-shell--table-settings-speech ()
   "Return a complete spoken summary of the table speech settings."
@@ -1357,7 +1604,8 @@ resulting configuration after the change."
             #'emacspeak-agent-shell--buffer-cleanup nil t)
   (emacspeak-agent-shell--permission-event-setup)
   (emacspeak-agent-shell--lifecycle-event-setup)
-  (emacspeak-agent-shell--tool-call-event-setup))
+  (emacspeak-agent-shell--tool-call-event-setup)
+  (emacspeak-agent-shell--table-navigation-setup))
 
 (defun emacspeak-agent-shell--buffer-cleanup ()
   "Cancel speech work and remove all support state from this shell buffer."
@@ -1366,6 +1614,7 @@ resulting configuration after the change."
   (emacspeak-agent-shell--permission-event-cleanup)
   (emacspeak-agent-shell--lifecycle-event-cleanup)
   (emacspeak-agent-shell--tool-call-event-cleanup)
+  (emacspeak-agent-shell--table-navigation-cleanup)
   (remove-hook 'kill-buffer-hook
                #'emacspeak-agent-shell--buffer-cleanup t)
   (remove-hook 'change-major-mode-hook
@@ -1416,10 +1665,18 @@ resulting configuration after the change."
   (remove-hook 'agent-shell-mode-hook
                #'emacspeak-agent-shell--tool-call-event-setup)
   (add-hook 'agent-shell-mode-hook #'emacspeak-agent-shell--buffer-setup)
+  (add-hook 'agent-shell-viewport-view-mode-hook
+            #'emacspeak-agent-shell--table-navigation-setup)
+  (add-hook 'agent-shell-viewport-edit-mode-hook
+            #'emacspeak-agent-shell--table-navigation-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
-      (when (derived-mode-p 'agent-shell-mode)
-        (emacspeak-agent-shell--buffer-setup))))
+      (cond
+       ((derived-mode-p 'agent-shell-mode)
+        (emacspeak-agent-shell--buffer-setup))
+       ((derived-mode-p 'agent-shell-viewport-view-mode
+                        'agent-shell-viewport-edit-mode)
+        (emacspeak-agent-shell--table-navigation-setup)))))
   (message "Enabled Emacspeak agent-shell support"))
 
 (defun emacspeak-agent-shell-disable ()
@@ -1430,6 +1687,10 @@ resulting configuration after the change."
     (ad-activate (car advice)))
   (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
   (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell--buffer-setup)
+  (remove-hook 'agent-shell-viewport-view-mode-hook
+               #'emacspeak-agent-shell--table-navigation-setup)
+  (remove-hook 'agent-shell-viewport-edit-mode-hook
+               #'emacspeak-agent-shell--table-navigation-setup)
   ;; Also remove setup hooks left by earlier versions.
   (remove-hook 'agent-shell-mode-hook
                #'emacspeak-agent-shell--permission-event-setup)
@@ -1439,8 +1700,12 @@ resulting configuration after the change."
                #'emacspeak-agent-shell--tool-call-event-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
-      (when (derived-mode-p 'agent-shell-mode)
-        (emacspeak-agent-shell--buffer-cleanup))))
+      (cond
+       ((derived-mode-p 'agent-shell-mode)
+        (emacspeak-agent-shell--buffer-cleanup))
+       ((derived-mode-p 'agent-shell-viewport-view-mode
+                        'agent-shell-viewport-edit-mode)
+        (emacspeak-agent-shell--table-navigation-cleanup)))))
   (message "Disabled Emacspeak agent-shell support"))
 
 (provide 'emacspeak-agent-shell)
