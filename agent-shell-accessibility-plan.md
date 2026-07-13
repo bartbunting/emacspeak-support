@@ -39,6 +39,9 @@ Completed so far:
 - preservation of agent-shell's text and graphical headers, with concise
   semantic focus speech for otherwise silent SVG headers and a full-state
   reading through Emacspeak's standard `C-e m` mode-line command;
+- explicit voice mappings for all current agent-shell interface faces, with
+  semantic contrast for success, busy, failure, and pending states and a
+  deliberately neutral viewport view state;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -58,8 +61,8 @@ Completed so far:
 The lifecycle event path replaces heartbeat advice and suppresses delayed
 rendered duplicates without discarding pending agent response text.  Tool
 events likewise replace asynchronous private save advice and avoid repeating
-rendered tool output.  Idle events, background-session identity, and the
-remaining face-map compatibility failure are still open Phase 0/1 work.
+rendered tool output.  Public idle events and the remaining Markdown face map
+are still open work.
 
 ### Transcript Block Navigation
 
@@ -160,11 +163,12 @@ session selector controls the backing shell from viewport mode.  Selecting
 - Viewport submission advice had drifted from the removed
   `agent-shell-viewport-submit`; it now targets the current compose command and
   remains covered by the advice-target compatibility test.
-- The only voice map names `agent-shell-mode-line`, which is not one of
-  agent-shell's current semantic faces.  Agent-shell defines semantic shell
-  and Markdown faces that are currently unmapped.
-- The speech setup can replace agent-shell's semantic header line with a
-  generic Emacspeak header.
+- Agent-shell's current interface faces now have explicit voice mappings;
+  Emacspeak's exact-symbol mapping does not inherit them from visual parent
+  faces.  The separate agent-shell Markdown faces remain to be mapped after
+  listening tests establish that the core voice set is useful.
+- Speech setup now preserves agent-shell's semantic header line; graphical
+  headers receive separate concise and full semantic speech paths.
 - Every shell can autospeak, so concurrent background agents lack a clear
   announcement policy or buffer identity.  Focus-aware levels now suppress
   background response and tool chatter by default; completed background turns
@@ -303,7 +307,8 @@ truncated speech, and restored user messages and unknown blocks remain usable.
 
 ### Phase 3: Navigation, Voices, and Viewport
 
-- Map current agent-shell and Markdown faces to appropriate personalities.
+- Map the remaining agent-shell Markdown faces to appropriate personalities,
+  building on the completed core interface-face map.
 - Extend the implemented typed block body/status/fold feedback to generic item
   navigation.
 - Add table cell/header context using Emacspeak's tabulated-list patterns.

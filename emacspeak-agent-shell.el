@@ -215,9 +215,42 @@ both, or neither kind of title."
 
 ;;;  Voice Personalities
 
-(voice-setup-add-map 
- '(
-   (agent-shell-mode-line voice-bolden-and-animate)))
+(defconst emacspeak-agent-shell--ui-face-voice-map
+  '((agent-shell-model voice-brighten-extra)
+    (agent-shell-thought-level voice-animate-extra)
+    (agent-shell-container-indicator voice-lighten)
+    (agent-shell-buffer-name voice-animate)
+    (agent-shell-session-id voice-lighten)
+    (agent-shell-session-mode voice-smoothen)
+    (agent-shell-session-title voice-bolden)
+    (agent-shell-session-directory voice-lighten-extra)
+    (agent-shell-session-date voice-monotone-extra)
+    (agent-shell-section-heading voice-bolden)
+    (agent-shell-section-annotation voice-monotone)
+    (agent-shell-success voice-brighten-extra)
+    (agent-shell-warning voice-brighten)
+    (agent-shell-error voice-bolden-and-animate)
+    (agent-shell-pending voice-monotone-extra)
+    (agent-shell-list-name voice-brighten)
+    (agent-shell-list-description voice-monotone-extra)
+    (agent-shell-list-value voice-lighten)
+    (agent-shell-usage voice-monotone-extra)
+    (agent-shell-prompt voice-lighten-extra)
+    (agent-shell-input voice-bolden-medium)
+    (agent-shell-key-binding voice-annotate)
+    (agent-shell-link voice-bolden)
+    (agent-shell-permission-title voice-bolden)
+    (agent-shell-viewport-prompt voice-monotone)
+    (agent-shell-viewport-status-edit voice-brighten-extra)
+    (agent-shell-viewport-status-busy voice-brighten))
+  "Voice personalities for current agent-shell interface faces.")
+
+(defconst emacspeak-agent-shell--ui-unvoiced-faces
+  '(agent-shell-viewport-status-view)
+  "Agent-shell interface faces intentionally left without a voice.
+The neutral viewport view face carries no state beyond its spoken text.")
+
+(voice-setup-add-map emacspeak-agent-shell--ui-face-voice-map)
 
 ;;;  Helper Functions
 

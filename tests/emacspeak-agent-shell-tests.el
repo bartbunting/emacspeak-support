@@ -25,6 +25,8 @@
 (defvar emacspeak-agent-shell--pending-speech-timer)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
+(defvar emacspeak-agent-shell--ui-face-voice-map)
+(defvar emacspeak-agent-shell--ui-unvoiced-faces)
 (defvar emacspeak-agent-shell-background-speech-level)
 (defvar emacspeak-agent-shell--block-navigation-type)
 (defvar emacspeak-agent-shell--block-repeat-map)
@@ -2754,10 +2756,47 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (when (buffer-live-p shell-buffer)
         (kill-buffer shell-buffer)))))
 
-(ert-deftest emacspeak-agent-shell-configured-faces-exist ()
-  "Every agent-shell face named by this integration should exist."
-  :expected-result :failed
-  (should (facep 'agent-shell-mode-line)))
+(ert-deftest emacspeak-agent-shell-ui-face-inventory-is-current ()
+  "Every current non-Markdown agent-shell face should be classified."
+  (let ((configured
+         (sort
+          (append (mapcar #'car emacspeak-agent-shell--ui-face-voice-map)
+                  emacspeak-agent-shell--ui-unvoiced-faces
+                  nil)
+          (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+        (current
+         (sort
+          (seq-filter
+           (lambda (face)
+             (let ((name (symbol-name face)))
+               (and (string-prefix-p "agent-shell-" name)
+                    (not (string-prefix-p "agent-shell-markdown-" name)))))
+           (face-list))
+          (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
+    (should (equal configured current))
+    (dolist (face configured)
+      (should (facep face)))
+    (should-not (memq 'agent-shell-mode-line configured))))
+
+(ert-deftest emacspeak-agent-shell-ui-face-voices-are-explicit ()
+  "Configured faces should resolve to their declared voice personalities."
+  (dolist (entry emacspeak-agent-shell--ui-face-voice-map)
+    (should
+     (eq (voice-setup-get-voice-for-face (car entry)) (cadr entry))))
+  (dolist (face emacspeak-agent-shell--ui-unvoiced-faces)
+    (should-not (voice-setup-get-voice-for-face face))))
+
+(ert-deftest emacspeak-agent-shell-status-faces-have-semantic-contrast ()
+  "Rendered status faces should distinguish success, busy, failure and wait."
+  (dolist (entry
+           '((agent-shell-success . voice-brighten-extra)
+             (agent-shell-warning . voice-brighten)
+             (agent-shell-error . voice-bolden-and-animate)
+             (agent-shell-pending . voice-monotone-extra)))
+    (with-temp-buffer
+      (insert (propertize "status" 'face (car entry)))
+      (goto-char (point-min))
+      (should (eq (dtk-get-style) (cdr entry))))))
 
 (ert-deftest emacspeak-agent-shell-disable-cleans-existing-buffer-state ()
   "Disabling support should cancel pending work in existing shell buffers."
