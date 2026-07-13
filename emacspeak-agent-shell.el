@@ -347,11 +347,7 @@ chunk arrives before speaking the complete text."
           (agent-shell-subscribe-to
            :shell-buffer (current-buffer)
            :event 'permission-response
-           :on-event #'emacspeak-agent-shell--handle-permission-response)))
-  (add-hook 'kill-buffer-hook
-            #'emacspeak-agent-shell--permission-event-cleanup nil t)
-  (add-hook 'change-major-mode-hook
-            #'emacspeak-agent-shell--permission-event-cleanup nil t))
+           :on-event #'emacspeak-agent-shell--handle-permission-response))))
 
 (defun emacspeak-agent-shell--permission-event-cleanup ()
   "Remove the current buffer's permission subscriptions and cached state."
@@ -455,11 +451,7 @@ Leave unrelated pending agent content and its timer intact."
     (setq emacspeak-agent-shell--lifecycle-subscription
           (agent-shell-subscribe-to
            :shell-buffer (current-buffer)
-           :on-event #'emacspeak-agent-shell--handle-lifecycle-event)))
-  (add-hook 'kill-buffer-hook
-            #'emacspeak-agent-shell--lifecycle-event-cleanup nil t)
-  (add-hook 'change-major-mode-hook
-            #'emacspeak-agent-shell--lifecycle-event-cleanup nil t))
+           :on-event #'emacspeak-agent-shell--handle-lifecycle-event))))
 
 (defun emacspeak-agent-shell--lifecycle-event-cleanup ()
   "Remove the current buffer's lifecycle event subscription."
@@ -926,11 +918,7 @@ and speak them after streaming pauses for a brief period."
           (agent-shell-subscribe-to
            :shell-buffer (current-buffer)
            :event 'tool-call-update
-           :on-event #'emacspeak-agent-shell--handle-tool-call-update)))
-  (add-hook 'kill-buffer-hook
-            #'emacspeak-agent-shell--tool-call-event-cleanup nil t)
-  (add-hook 'change-major-mode-hook
-            #'emacspeak-agent-shell--tool-call-event-cleanup nil t))
+           :on-event #'emacspeak-agent-shell--handle-tool-call-update))))
 
 (defun emacspeak-agent-shell--tool-call-event-cleanup ()
   "Remove the current buffer's tool subscription and cached state."
@@ -945,6 +933,28 @@ and speak them after streaming pauses for a brief period."
                #'emacspeak-agent-shell--tool-call-event-cleanup t)
   (remove-hook 'change-major-mode-hook
                #'emacspeak-agent-shell--tool-call-event-cleanup t))
+
+(defun emacspeak-agent-shell--buffer-setup ()
+  "Install event support and centralized cleanup in this shell buffer."
+  (add-hook 'kill-buffer-hook
+            #'emacspeak-agent-shell--buffer-cleanup nil t)
+  (add-hook 'change-major-mode-hook
+            #'emacspeak-agent-shell--buffer-cleanup nil t)
+  (emacspeak-agent-shell--permission-event-setup)
+  (emacspeak-agent-shell--lifecycle-event-setup)
+  (emacspeak-agent-shell--tool-call-event-setup))
+
+(defun emacspeak-agent-shell--buffer-cleanup ()
+  "Cancel speech work and remove all support state from this shell buffer."
+  (emacspeak-agent-shell--cancel-pending-speech)
+  (setq emacspeak-agent-shell--pending-bodies nil)
+  (emacspeak-agent-shell--permission-event-cleanup)
+  (emacspeak-agent-shell--lifecycle-event-cleanup)
+  (emacspeak-agent-shell--tool-call-event-cleanup)
+  (remove-hook 'kill-buffer-hook
+               #'emacspeak-agent-shell--buffer-cleanup t)
+  (remove-hook 'change-major-mode-hook
+               #'emacspeak-agent-shell--buffer-cleanup t))
 
 ;;;  Enable/Disable support:
 
@@ -979,18 +989,19 @@ and speak them after streaming pauses for a brief period."
     (ad-enable-advice (car advice) (cadr advice) 'emacspeak)
     (ad-activate (car advice)))
   (add-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
-  (add-hook 'agent-shell-mode-hook
-            #'emacspeak-agent-shell--permission-event-setup)
-  (add-hook 'agent-shell-mode-hook
-            #'emacspeak-agent-shell--lifecycle-event-setup)
-  (add-hook 'agent-shell-mode-hook
-            #'emacspeak-agent-shell--tool-call-event-setup)
+  ;; Remove hooks installed by earlier versions before installing the
+  ;; centralized setup path.
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--permission-event-setup)
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--lifecycle-event-setup)
+  (remove-hook 'agent-shell-mode-hook
+               #'emacspeak-agent-shell--tool-call-event-setup)
+  (add-hook 'agent-shell-mode-hook #'emacspeak-agent-shell--buffer-setup)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'agent-shell-mode)
-        (emacspeak-agent-shell--permission-event-setup)
-        (emacspeak-agent-shell--lifecycle-event-setup)
-        (emacspeak-agent-shell--tool-call-event-setup))))
+        (emacspeak-agent-shell--buffer-setup))))
   (message "Enabled Emacspeak agent-shell support"))
 
 (defun emacspeak-agent-shell-disable ()
@@ -1000,6 +1011,8 @@ and speak them after streaming pauses for a brief period."
     (ad-disable-advice (car advice) (cadr advice) 'emacspeak)
     (ad-activate (car advice)))
   (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell-speech-setup)
+  (remove-hook 'agent-shell-mode-hook #'emacspeak-agent-shell--buffer-setup)
+  ;; Also remove setup hooks left by earlier versions.
   (remove-hook 'agent-shell-mode-hook
                #'emacspeak-agent-shell--permission-event-setup)
   (remove-hook 'agent-shell-mode-hook
@@ -1009,13 +1022,7 @@ and speak them after streaming pauses for a brief period."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'agent-shell-mode)
-        (when (or emacspeak-agent-shell--permission-subscription
-                  emacspeak-agent-shell--permission-response-subscription)
-          (emacspeak-agent-shell--permission-event-cleanup))
-        (when emacspeak-agent-shell--lifecycle-subscription
-          (emacspeak-agent-shell--lifecycle-event-cleanup))
-        (when emacspeak-agent-shell--tool-call-subscription
-          (emacspeak-agent-shell--tool-call-event-cleanup)))))
+        (emacspeak-agent-shell--buffer-cleanup))))
   (message "Disabled Emacspeak agent-shell support"))
 
 (provide 'emacspeak-agent-shell)

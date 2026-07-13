@@ -28,16 +28,18 @@ Completed so far:
 
 - deterministic speech collectors and upstream traffic-fixture replay;
 - public permission request and response subscriptions, including simultaneous
-  requests, semantic choices, focus feedback, and response confirmation; and
+  requests, semantic choices, focus feedback, and response confirmation;
 - public initialization, input, turn-completion, and error feedback with
-  distinct normal, cancelled, limited, refused, and failed outcomes; and
+  distinct normal, cancelled, limited, refused, and failed outcomes;
 - public tool-call status feedback with per-tool transition deduplication and
-  icon-only, summary, and full-output verbosity.
+  icon-only, summary, and full-output verbosity; and
+- centralized, idempotent buffer teardown for pending speech, subscriptions,
+  and caches on disable, major-mode change, and buffer death.
 
 The lifecycle event path replaces heartbeat advice and suppresses delayed
 rendered duplicates without discarding pending agent response text.  Tool
 events likewise replace asynchronous private save advice and avoid repeating
-rendered tool output.  Idle events, background-session identity, and the
+rendered tool output.  Idle events, background-session identity, and three
 remaining compatibility failures are still open Phase 0/1 work.
 
 ## Findings

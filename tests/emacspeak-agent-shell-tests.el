@@ -31,6 +31,10 @@
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
                   "emacspeak-agent-shell" (buffer qualified-ids))
+(declare-function emacspeak-agent-shell--buffer-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--buffer-setup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--handle-permission-request
                   "emacspeak-agent-shell" (event))
 (declare-function emacspeak-agent-shell--handle-permission-response
@@ -348,17 +352,24 @@ ENTRIES is an alist of qualified block IDs to body strings."
           (emacspeak-agent-shell-enable)
           (should (memq #'emacspeak-agent-shell-speech-setup
                         agent-shell-mode-hook))
-          (should (memq #'emacspeak-agent-shell--permission-event-setup
+          (should (memq #'emacspeak-agent-shell--buffer-setup
                         agent-shell-mode-hook))
-          (should (memq #'emacspeak-agent-shell--lifecycle-event-setup
-                        agent-shell-mode-hook))
-          (should (memq #'emacspeak-agent-shell--tool-call-event-setup
-                        agent-shell-mode-hook))
+          (should-not
+           (memq #'emacspeak-agent-shell--permission-event-setup
+                 agent-shell-mode-hook))
+          (should-not
+           (memq #'emacspeak-agent-shell--lifecycle-event-setup
+                 agent-shell-mode-hook))
+          (should-not
+           (memq #'emacspeak-agent-shell--tool-call-event-setup
+                 agent-shell-mode-hook))
           (dolist (entry emacspeak-agent-shell--advice-list)
             (when (fboundp (car entry))
               (should (ad-is-active (car entry)))))
           (emacspeak-agent-shell-disable)
           (should-not (memq #'emacspeak-agent-shell-speech-setup
+                            agent-shell-mode-hook))
+          (should-not (memq #'emacspeak-agent-shell--buffer-setup
                             agent-shell-mode-hook))
           (should-not (memq #'emacspeak-agent-shell--permission-event-setup
                             agent-shell-mode-hook))
@@ -900,37 +911,131 @@ ENTRIES is an alist of qualified block IDs to body strings."
 
 (ert-deftest emacspeak-agent-shell-disable-cleans-existing-buffer-state ()
   "Disabling support should cancel pending work in existing shell buffers."
-  :expected-result :failed
   (let ((buffer (generate-new-buffer " *agent-shell-cleanup-test*"))
         (saved-hook agent-shell-mode-hook)
         (saved-advice (emacspeak-agent-shell-test--saved-advice-state))
-        timer)
+        state timer fired)
     (unwind-protect
         (progn
-          (emacspeak-agent-shell-enable)
           (with-current-buffer buffer
             (setq major-mode 'agent-shell-mode)
+            (setq state
+                  (list (cons :buffer buffer)
+                        (cons :event-subscriptions nil)))
+            (setq-local agent-shell--state state)
             (setq-local emacspeak-agent-shell--pending-bodies
                         (make-hash-table :test #'equal))
             (puthash "request-agent_message_chunk" "pending"
                      emacspeak-agent-shell--pending-bodies)
             (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
                         '("request-agent_message_chunk"))
-            (setq timer (run-with-timer 3600 nil #'ignore))
+            (setq-local emacspeak-agent-shell--permission-action-cache
+                        (make-hash-table :test #'equal))
+            (puthash "permission" '((:option . "Allow"))
+                     emacspeak-agent-shell--permission-action-cache)
+            (setq-local emacspeak-agent-shell--tool-call-status-cache
+                        (make-hash-table :test #'equal))
+            (puthash "tool" "in_progress"
+                     emacspeak-agent-shell--tool-call-status-cache)
+            (setq timer (run-with-timer 0.1 nil
+                                        (lambda () (setq fired t))))
             (setq-local emacspeak-agent-shell--pending-speech-timer timer))
+          (emacspeak-agent-shell-enable)
+          (with-current-buffer buffer
+            (should (= 4 (length (map-elt
+                                  agent-shell--state
+                                  :event-subscriptions))))
+            (should (memq #'emacspeak-agent-shell--buffer-cleanup
+                          kill-buffer-hook))
+            (should (memq #'emacspeak-agent-shell--buffer-cleanup
+                          change-major-mode-hook)))
           (emacspeak-agent-shell-disable)
+          (emacspeak-agent-shell-disable)
+          (sit-for 0.15)
+          (should-not fired)
           (with-current-buffer buffer
             (should-not emacspeak-agent-shell--pending-speech-timer)
             (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
-            (should (or (null emacspeak-agent-shell--pending-bodies)
-                        (= 0 (hash-table-count
-                              emacspeak-agent-shell--pending-bodies))))))
+            (should-not emacspeak-agent-shell--pending-bodies)
+            (should-not emacspeak-agent-shell--permission-subscription)
+            (should-not
+             emacspeak-agent-shell--permission-response-subscription)
+            (should-not emacspeak-agent-shell--permission-action-cache)
+            (should-not emacspeak-agent-shell--lifecycle-subscription)
+            (should-not emacspeak-agent-shell--tool-call-subscription)
+            (should-not emacspeak-agent-shell--tool-call-status-cache)
+            (should-not (map-elt agent-shell--state
+                                 :event-subscriptions))
+            (should-not (memq #'emacspeak-agent-shell--buffer-cleanup
+                              kill-buffer-hook))
+            (should-not (memq #'emacspeak-agent-shell--buffer-cleanup
+                              change-major-mode-hook))))
       (when (timerp timer)
         (cancel-timer timer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (setq agent-shell-mode-hook saved-hook)
       (emacspeak-agent-shell-test--restore-advice-state saved-advice))))
+
+(ert-deftest emacspeak-agent-shell-mode-change-cleans-buffer-state ()
+  "Changing major mode should cancel timers and remove subscriptions."
+  (let ((buffer (generate-new-buffer " *agent-shell-mode-cleanup-test*"))
+        state timer fired)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode)
+            (setq state
+                  (list (cons :buffer buffer)
+                        (cons :event-subscriptions nil)))
+            (setq-local agent-shell--state state)
+            (emacspeak-agent-shell--buffer-setup)
+            (setq timer (run-with-timer 0.1 nil
+                                        (lambda () (setq fired t))))
+            (setq-local emacspeak-agent-shell--pending-speech-timer timer
+                        emacspeak-agent-shell--pending-speech-qualified-ids
+                        '("pending"))
+            (setq-local emacspeak-agent-shell--pending-bodies
+                        (make-hash-table :test #'equal))
+            (puthash "pending" "text"
+                     emacspeak-agent-shell--pending-bodies)
+            (fundamental-mode))
+          (sit-for 0.15)
+          (should-not fired)
+          (should-not (map-elt state :event-subscriptions))
+          (with-current-buffer buffer
+            (should-not emacspeak-agent-shell--pending-speech-timer)
+            (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+            (should-not emacspeak-agent-shell--pending-bodies)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-buffer-death-cleans-buffer-state ()
+  "Killing a shell buffer should cancel speech and unsubscribe its events."
+  (let ((buffer (generate-new-buffer " *agent-shell-kill-cleanup-test*"))
+        state timer fired)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq major-mode 'agent-shell-mode)
+            (setq state
+                  (list (cons :buffer buffer)
+                        (cons :event-subscriptions nil)))
+            (setq-local agent-shell--state state)
+            (emacspeak-agent-shell--buffer-setup)
+            (setq timer (run-with-timer 0.1 nil
+                                        (lambda () (setq fired t))))
+            (setq-local emacspeak-agent-shell--pending-speech-timer timer))
+          (kill-buffer buffer)
+          (sit-for 0.15)
+          (should-not fired)
+          (should-not (map-elt state :event-subscriptions)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (provide 'emacspeak-agent-shell-tests)
 ;;; emacspeak-agent-shell-tests.el ends here
