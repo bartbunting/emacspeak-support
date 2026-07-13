@@ -22,6 +22,8 @@
 (defvar emacspeak-agent-shell--permission-subscription)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
+(defvar emacspeak-agent-shell-background-speech-level)
+(defvar emacspeak-agent-shell-foreground-speech-level)
 (defvar emacspeak-agent-shell--table-navigation-active)
 (defvar emacspeak-agent-shell--table-navigation-map)
 (defvar emacspeak-agent-shell--table-navigation-table-start)
@@ -33,11 +35,14 @@
 (defvar emacspeak-agent-shell-table-data-position)
 (defvar emacspeak-agent-shell-table-titles)
 (defvar emacspeak-agent-shell-tool-output-verbosity)
+(defvar emacspeak-comint-autospeak)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar agent-shell-viewport-view-mode-hook)
 
 (declare-function emacspeak-agent-shell--execute-delayed-speech
                   "emacspeak-agent-shell" (buffer qualified-ids))
+(declare-function emacspeak-agent-shell--effective-speech-level
+                  "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell--buffer-cleanup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--buffer-setup
@@ -62,6 +67,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--permission-event-setup
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--session-focused-p
+                  "emacspeak-agent-shell" (&optional buffer))
 (declare-function emacspeak-agent-shell--speak-content
                   "emacspeak-agent-shell" (content block-type))
 (declare-function emacspeak-agent-shell--tool-call-block-handled-p
@@ -130,10 +137,18 @@
   "Run BODY and return ordered speech, stop, icon, and message events."
   (declare (indent 0) (debug t))
   (let ((event-log (make-symbol "event-log")))
-    `(let ((,event-log nil))
+    `(let ((emacspeak-agent-shell-foreground-speech-level 'full)
+           (emacspeak-agent-shell-background-speech-level 'full)
+           (,event-log nil))
        (cl-letf (((symbol-function 'dtk-speak)
                   (lambda (text)
                     (push (list 'speak text) ,event-log)))
+                 ((symbol-function 'dtk-notify)
+                  (lambda (text &optional _dont-log)
+                    (push (list 'notify text) ,event-log)))
+                 ((symbol-function 'dtk-notify-icon)
+                  (lambda (icon)
+                    (push (list 'notify-icon icon) ,event-log)))
                  ((symbol-function 'dtk-stop)
                   (lambda (&optional all)
                     (push (list 'stop all) ,event-log)))
@@ -145,7 +160,9 @@
                     (push (list 'message
                                 (apply #'format-message
                                        format-string arguments))
-                          ,event-log))))
+                          ,event-log)))
+                 ((symbol-function 'emacspeak-agent-shell--session-focused-p)
+                  (lambda (&optional _buffer) t)))
          ,@body
          (nreverse ,event-log)))))
 
@@ -155,6 +172,7 @@ ENTRIES is an alist of qualified block IDs to body strings."
   (let ((buffer (generate-new-buffer " *emacspeak-agent-shell-test*")))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local emacspeak-comint-autospeak t)
           (setq-local emacspeak-agent-shell--pending-bodies
                       (make-hash-table :test #'equal))
           (dolist (entry entries)
@@ -676,6 +694,134 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (icon task-done)
         (icon progress)
         (icon task-done))))))
+
+(ert-deftest emacspeak-agent-shell-focus-includes-associated-viewport ()
+  "A selected shell or its viewport should be the focused session."
+  (let ((shell (generate-new-buffer "Codex Agent @ focus-test"))
+        (viewport (generate-new-buffer
+                   "Codex Agent @ focus-test [viewport]"))
+        (other (generate-new-buffer " *agent-shell-other*"))
+        (emacspeak-agent-shell-foreground-speech-level 'response)
+        (emacspeak-agent-shell-background-speech-level 'notify))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer shell
+            (setq major-mode 'agent-shell-mode))
+          (with-current-buffer viewport
+            (setq major-mode 'agent-shell-viewport-view-mode))
+          (switch-to-buffer shell)
+          (should (emacspeak-agent-shell--session-focused-p shell))
+          (should (eq (emacspeak-agent-shell--effective-speech-level shell)
+                      'response))
+          (switch-to-buffer other)
+          (should-not (emacspeak-agent-shell--session-focused-p shell))
+          (should (eq (emacspeak-agent-shell--effective-speech-level shell)
+                      'notify))
+          (switch-to-buffer viewport)
+          (should (emacspeak-agent-shell--session-focused-p shell))
+          (should (eq (emacspeak-agent-shell--effective-speech-level shell)
+                      'response)))
+      (dolist (buffer (list shell viewport other))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest emacspeak-agent-shell-response-level-reduces-focused-chatter ()
+  "The default focused level should retain responses and completion only."
+  (let ((emacspeak-agent-shell-foreground-speech-level 'response)
+        (emacspeak-agent-shell-signal-processing t)
+        (emacspeak-agent-shell-speak-tool-calls t))
+    (with-temp-buffer
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (let ((emacspeak-agent-shell-foreground-speech-level 'response))
+            (emacspeak-agent-shell--speak-content
+             "Useful response" 'agent-message)
+            (emacspeak-agent-shell--speak-content "Reasoning" 'thought)
+            (emacspeak-agent-shell--handle-tool-call-update
+             (emacspeak-agent-shell-test--tool-call-event
+              "reader" "in_progress" "Read README"))
+            (emacspeak-agent-shell--handle-lifecycle-event
+             '((:event . input-submitted)))
+            (emacspeak-agent-shell--handle-lifecycle-event
+             '((:event . turn-complete)
+               (:data (:stop-reason . "end_turn"))))))
+        '((speak "Useful response")
+          (icon task-done)))))))
+
+(ert-deftest emacspeak-agent-shell-background-notifies-without-content ()
+  "Background sessions should drop pending content and identify completion."
+  (let ((buffer (generate-new-buffer "Codex Agent @ background-test"))
+        (emacspeak-agent-shell-background-speech-level 'notify)
+        (emacspeak-agent-shell-signal-processing t)
+        (emacspeak-agent-shell-speak-tool-calls t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local emacspeak-comint-autospeak t)
+          (setq-local emacspeak-agent-shell--pending-bodies
+                      (make-hash-table :test #'equal))
+          (puthash "1-agent_message_chunk" "Do not speak this response"
+                   emacspeak-agent-shell--pending-bodies)
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (let ((emacspeak-agent-shell-background-speech-level 'notify))
+                (cl-letf
+                    (((symbol-function
+                       'emacspeak-agent-shell--session-focused-p)
+                      (lambda (&optional _buffer) nil)))
+                  (emacspeak-agent-shell--execute-delayed-speech
+                   buffer '("1-agent_message_chunk"))
+                  (emacspeak-agent-shell--handle-tool-call-update
+                   (emacspeak-agent-shell-test--tool-call-event
+                    "reader" "completed" "Read README"))
+                  (emacspeak-agent-shell--handle-lifecycle-event
+                   '((:event . input-submitted)))
+                  (emacspeak-agent-shell--handle-lifecycle-event
+                   '((:event . turn-complete)
+                     (:data (:stop-reason . "end_turn")))))))
+            '((notify-icon task-done)
+              (notify "Codex Agent @ background-test finished."))))
+          (should (= 0 (hash-table-count
+                        emacspeak-agent-shell--pending-bodies)))
+          (should (= 0 (hash-table-count
+                        emacspeak-agent-shell--tool-call-status-cache))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-quiet-retains-urgent-background-events ()
+  "Quiet sessions should still identify errors and blocking permissions."
+  (let ((buffer (generate-new-buffer "Codex Agent @ quiet-test"))
+        (emacspeak-agent-shell-background-speech-level 'quiet)
+        (emacspeak-agent-shell-signal-processing t)
+        (emacspeak-agent-shell-speak-permissions t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (let ((emacspeak-agent-shell-background-speech-level 'quiet))
+                (cl-letf
+                    (((symbol-function
+                       'emacspeak-agent-shell--session-focused-p)
+                      (lambda (&optional _buffer) nil)))
+                  (emacspeak-agent-shell--handle-lifecycle-event
+                   '((:event . error)
+                     (:data (:message . "Connection lost"))))
+                  (emacspeak-agent-shell--handle-permission-request
+                   '((:event . permission-request)
+                     (:data (:tool-call-id . "tool-id")
+                            (:tool-call
+                             (:title . "Run command")
+                             (:permission-actions
+                              ((:option . "Allow"))))))))))
+            '((notify-icon warn-user)
+              (notify "Codex Agent @ quiet-test. Agent error: Connection lost")
+              (stop nil)
+              (notify-icon warn-user)
+              (notify "Codex Agent @ quiet-test. Permission request. Run command. Choice 1: Allow.")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest emacspeak-agent-shell-exceptional-lifecycle-is-spoken ()
   "Exceptional turn completions and ACP errors should be unambiguous."

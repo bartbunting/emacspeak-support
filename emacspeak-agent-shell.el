@@ -111,6 +111,31 @@ cues."
   :type 'boolean
   :group 'emacspeak-agent-shell)
 
+(defcustom emacspeak-agent-shell-foreground-speech-level 'response
+  "Automatic speech level for the focused agent-shell session.
+The focused session is the selected agent-shell buffer or the shell associated
+with the selected viewport.  `full' preserves configured response, thought,
+tool, and lifecycle feedback.  `response' speaks agent responses and completion
+feedback while suppressing routine thought and tool chatter.  `notify' only
+signals completion, and `quiet' suppresses routine feedback.  Permissions and
+errors remain controlled separately because they may require action."
+  :type '(choice (const :tag "Full detail" full)
+                 (const :tag "Responses" response)
+                 (const :tag "Notifications" notify)
+                 (const :tag "Quiet" quiet))
+  :group 'emacspeak-agent-shell)
+
+(defcustom emacspeak-agent-shell-background-speech-level 'notify
+  "Automatic speech level for an unfocused agent-shell session.
+The available levels have the same meaning as
+`emacspeak-agent-shell-foreground-speech-level'.  Background completion uses
+Emacspeak's notification stream and includes the session buffer name."
+  :type '(choice (const :tag "Full detail" full)
+                 (const :tag "Responses" response)
+                 (const :tag "Notifications" notify)
+                 (const :tag "Quiet" quiet))
+  :group 'emacspeak-agent-shell)
+
 (defcustom emacspeak-agent-shell-processing-start-icon 'progress
   "Auditory icon played when the model starts processing a prompt."
   :type 'symbol
@@ -253,11 +278,70 @@ chunk arrives before speaking the complete text."
   :type 'number
   :group 'emacspeak-agent-shell)
 
+(defconst emacspeak-agent-shell--speech-level-values
+  '((quiet . 0) (notify . 1) (response . 2) (full . 3))
+  "Numeric ordering of agent-shell automatic speech levels.")
+
+(defun emacspeak-agent-shell--session-focused-p (&optional buffer)
+  "Return non-nil when BUFFER's agent-shell session has keyboard focus.
+A selected viewport counts as focus for its associated shell buffer."
+  (let* ((shell-buffer (or buffer (current-buffer)))
+         (selected-buffer (window-buffer (selected-window))))
+    (and (buffer-live-p shell-buffer)
+         (or (eq shell-buffer selected-buffer)
+             (and (buffer-live-p selected-buffer)
+                  (with-current-buffer selected-buffer
+                    (and
+                     (derived-mode-p 'agent-shell-viewport-view-mode
+                                     'agent-shell-viewport-edit-mode)
+                     (fboundp 'agent-shell-viewport--shell-buffer)
+                     (eq shell-buffer
+                         (agent-shell-viewport--shell-buffer
+                          selected-buffer)))))))))
+
+(defun emacspeak-agent-shell--session-label (&optional buffer)
+  "Return a concise spoken label for agent-shell BUFFER."
+  (let* ((name (buffer-name (or buffer (current-buffer))))
+         (trimmed (and name
+                       (string-trim name
+                                    "[*[:space:]]+"
+                                    "[*[:space:]]+"))))
+    (if (and trimmed (not (string-empty-p trimmed)))
+        trimmed
+      "Agent shell")))
+
+(defun emacspeak-agent-shell--effective-speech-level (&optional buffer)
+  "Return the automatic speech level currently effective for BUFFER."
+  (if (emacspeak-agent-shell--session-focused-p buffer)
+      emacspeak-agent-shell-foreground-speech-level
+    emacspeak-agent-shell-background-speech-level))
+
+(defun emacspeak-agent-shell--speech-level-at-least-p (level &optional buffer)
+  "Return non-nil when BUFFER's effective speech level includes LEVEL."
+  (>= (or (alist-get (emacspeak-agent-shell--effective-speech-level buffer)
+                     emacspeak-agent-shell--speech-level-values)
+          0)
+      (or (alist-get level emacspeak-agent-shell--speech-level-values) 0)))
+
+(defun emacspeak-agent-shell--deliver-announcement (icon text)
+  "Deliver ICON and TEXT for the current session without background chatter."
+  (if (emacspeak-agent-shell--session-focused-p)
+      (progn
+        (emacspeak-icon icon)
+        (dtk-speak text))
+    (dtk-notify-icon icon)
+    (dtk-notify
+     (format "%s. %s"
+             (emacspeak-agent-shell--session-label)
+             text))))
+
 (defun emacspeak-agent-shell--should-speak-p (buffer)
   "Determine if content should be spoken for BUFFER."
   (cl-declare (special emacspeak-comint-autospeak))
   (with-current-buffer buffer
-    emacspeak-comint-autospeak))
+    (and (bound-and-true-p emacspeak-comint-autospeak)
+         (emacspeak-agent-shell--speech-level-at-least-p
+          'response buffer))))
 
 (defun emacspeak-agent-shell--cancel-pending-speech ()
   "Cancel and discard delayed speech pending in the current shell."
@@ -318,8 +402,9 @@ chunk arrives before speaking the complete text."
   (emacspeak-agent-shell--cancel-pending-speech)
   (when emacspeak-agent-shell-speak-permissions
     (dtk-stop)
-    (emacspeak-icon 'warn-user)
-    (dtk-speak (emacspeak-agent-shell--permission-announcement event))))
+    (emacspeak-agent-shell--deliver-announcement
+     'warn-user
+     (emacspeak-agent-shell--permission-announcement event))))
 
 (defun emacspeak-agent-shell--handle-permission-response (event)
   "Announce the semantic result of permission response EVENT."
@@ -345,19 +430,19 @@ chunk arrives before speaking the complete text."
     (when emacspeak-agent-shell-speak-permissions
       (cond
        (cancelled
-        (emacspeak-icon 'close-object)
-        (dtk-speak "Permission cancelled."))
+        (emacspeak-agent-shell--deliver-announcement
+         'close-object "Permission cancelled."))
        ((equal kind "reject_once")
-        (emacspeak-icon 'close-object)
-        (dtk-speak (format "Permission denied: %s."
-                           (or option "Reject"))))
+        (emacspeak-agent-shell--deliver-announcement
+         'close-object
+         (format "Permission denied: %s." (or option "Reject"))))
        ((member kind '("allow_once" "allow_always"))
-        (emacspeak-icon 'select-object)
-        (dtk-speak (format "Permission granted: %s."
-                           (or option "Allow"))))
+        (emacspeak-agent-shell--deliver-announcement
+         'select-object
+         (format "Permission granted: %s." (or option "Allow"))))
        (t
-        (emacspeak-icon 'select-object)
-        (dtk-speak "Permission response sent."))))))
+        (emacspeak-agent-shell--deliver-announcement
+         'select-object "Permission response sent."))))))
 
 (defun emacspeak-agent-shell--permission-event-setup ()
   "Subscribe the current agent-shell buffer to permission events."
@@ -421,38 +506,45 @@ Leave unrelated pending agent content and its timer intact."
             (string-trim (substring-no-properties message)))
            (code (format "code %s" code))
            (t nil))))
-    (emacspeak-icon 'warn-user)
-    (dtk-speak (if detail
-                   (format "Agent error: %s" detail)
-                 "Agent error."))))
+    (emacspeak-agent-shell--deliver-announcement
+     'warn-user
+     (if detail
+         (format "Agent error: %s" detail)
+       "Agent error."))))
 
 (defun emacspeak-agent-shell--speak-turn-completion (event)
   "Announce the outcome described by turn completion EVENT."
   (let ((stop-reason (map-nested-elt event '(:data :stop-reason))))
     (if (equal stop-reason "end_turn")
-        (emacspeak-icon emacspeak-agent-shell-processing-end-icon)
+        (when (emacspeak-agent-shell--speech-level-at-least-p 'notify)
+          (if (emacspeak-agent-shell--session-focused-p)
+              (emacspeak-icon emacspeak-agent-shell-processing-end-icon)
+            (dtk-notify-icon emacspeak-agent-shell-processing-end-icon)
+            (dtk-notify
+             (format "%s finished."
+                     (emacspeak-agent-shell--session-label)))))
       (emacspeak-agent-shell--discard-pending-blocks "-stop-reason$")
       (pcase stop-reason
         ("cancelled"
-         (emacspeak-icon 'close-object)
-         (dtk-speak "Agent turn cancelled."))
+         (emacspeak-agent-shell--deliver-announcement
+          'close-object "Agent turn cancelled."))
         ("max_tokens"
-         (emacspeak-icon 'warn-user)
-         (dtk-speak "Agent stopped: maximum token limit reached."))
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user "Agent stopped: maximum token limit reached."))
         ("max_turn_requests"
-         (emacspeak-icon 'warn-user)
-         (dtk-speak "Agent stopped: request limit reached."))
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user "Agent stopped: request limit reached."))
         ("refusal"
-         (emacspeak-icon 'warn-user)
-         (dtk-speak "Agent refused the request."))
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user "Agent refused the request."))
         ((pred stringp)
-         (emacspeak-icon 'warn-user)
-         (dtk-speak
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user
           (format "Agent stopped: %s."
                   (string-replace "_" " " stop-reason))))
         (_
-         (emacspeak-icon 'warn-user)
-         (dtk-speak "Agent stopped for an unknown reason."))))))
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user "Agent stopped for an unknown reason."))))))
 
 (defun emacspeak-agent-shell--handle-lifecycle-event (event)
   "Provide semantic processing feedback for public agent-shell EVENT."
@@ -462,9 +554,11 @@ Leave unrelated pending agent content and its timer intact."
   (when emacspeak-agent-shell-signal-processing
     (pcase (map-elt event :event)
       ((or 'init-started 'input-submitted)
-       (emacspeak-icon emacspeak-agent-shell-processing-start-icon))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+         (emacspeak-icon emacspeak-agent-shell-processing-start-icon)))
       ('init-finished
-       (emacspeak-icon emacspeak-agent-shell-processing-end-icon))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+         (emacspeak-icon emacspeak-agent-shell-processing-end-icon)))
       ('turn-complete
        (emacspeak-agent-shell--speak-turn-completion event))
       ('error
@@ -502,17 +596,22 @@ This is called after streaming has completed."
   (cl-declare (special dtk-speaker-process))
   (when (and buffer (buffer-live-p buffer))
     (with-current-buffer buffer
-      (dolist (qualified-id qualified-ids)
-        (when-let* ((content (and emacspeak-agent-shell--pending-bodies
-                                  (gethash qualified-id
-                                           emacspeak-agent-shell--pending-bodies)))
-                    (block-id (if (string-match "-\\([^-]+\\)$" qualified-id)
-                                  (match-string 1 qualified-id)
-                                qualified-id))
-                    (block-type (emacspeak-agent-shell--classify-block block-id))
-                    (trimmed (string-trim content)))
-          (when (not (string-empty-p trimmed))
-            (emacspeak-agent-shell--speak-content trimmed block-type))))
+      (when (emacspeak-agent-shell--should-speak-p buffer)
+        (dolist (qualified-id qualified-ids)
+          (when-let* ((content (and emacspeak-agent-shell--pending-bodies
+                                    (gethash
+                                     qualified-id
+                                     emacspeak-agent-shell--pending-bodies)))
+                      (block-id
+                       (if (string-match "-\\([^-]+\\)$" qualified-id)
+                           (match-string 1 qualified-id)
+                         qualified-id))
+                      (block-type
+                       (emacspeak-agent-shell--classify-block block-id))
+                      (trimmed (string-trim content)))
+            (when (not (string-empty-p trimmed))
+              (emacspeak-agent-shell--speak-content
+               trimmed block-type)))))
       (when emacspeak-agent-shell--pending-bodies
         (clrhash emacspeak-agent-shell--pending-bodies))
       (setq emacspeak-agent-shell--pending-speech-qualified-ids nil)
@@ -542,21 +641,25 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
   (let ((trimmed-content (string-trim content)))
     (pcase block-type
       ('agent-message
-       (dtk-speak trimmed-content))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'response)
+         (dtk-speak trimmed-content)))
       ('user-message
-       (emacspeak-icon 'item)
-       (dtk-speak (concat "User: " trimmed-content)))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+         (emacspeak-icon 'item)
+         (dtk-speak (concat "User: " trimmed-content))))
       ('thought
-       (pcase emacspeak-agent-shell-speak-thought-process
-         ('speak (dtk-speak (concat "Thinking: " trimmed-content)))
-         ('icon (emacspeak-icon 'progress))
-         (_ nil)))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+         (pcase emacspeak-agent-shell-speak-thought-process
+           ('speak (dtk-speak (concat "Thinking: " trimmed-content)))
+           ('icon (emacspeak-icon 'progress))
+           (_ nil))))
       ('permission
        (when emacspeak-agent-shell-speak-permissions
-         (emacspeak-icon 'warn-user)
-         (dtk-speak trimmed-content)))
+         (emacspeak-agent-shell--deliver-announcement
+          'warn-user trimmed-content)))
       ('tool-call
-       (when emacspeak-agent-shell-speak-tool-calls
+       (when (and emacspeak-agent-shell-speak-tool-calls
+                  (emacspeak-agent-shell--speech-level-at-least-p 'full))
          (pcase emacspeak-agent-shell-tool-output-verbosity
            ('full (dtk-speak trimmed-content))
            ('summary 
@@ -569,14 +672,16 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
             ;; Just play an icon for status-only mode
             (emacspeak-icon 'task-done)))))
       ('plan
-       (emacspeak-icon 'item)
-       (dtk-speak (concat "Plan: " trimmed-content)))
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'response)
+         (emacspeak-icon 'item)
+         (dtk-speak (concat "Plan: " trimmed-content))))
       ('error
-       (emacspeak-icon 'warn-user)
-       (dtk-speak trimmed-content))
+       (emacspeak-agent-shell--deliver-announcement
+        'warn-user trimmed-content))
       (_
        ;; Fallback: speak if content is substantial
-       (when (> (length trimmed-content) 0)
+       (when (and (> (length trimmed-content) 0)
+                  (emacspeak-agent-shell--speech-level-at-least-p 'response))
          (dtk-speak trimmed-content))))))
 
 ;;;  Advice Agent-Shell Functions
@@ -1639,6 +1744,7 @@ the corresponding buffer boundary."
         (puthash tool-call-id status
                  emacspeak-agent-shell--tool-call-status-cache)
         (when (and emacspeak-agent-shell-speak-tool-calls
+                   (emacspeak-agent-shell--speech-level-at-least-p 'full)
                    (member status
                            '("pending" "in_progress" "completed" "failed"))
                    (not (equal status previous)))

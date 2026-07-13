@@ -110,7 +110,9 @@ and speaks the adjacent content instead of reporting that no cells remain.
 - The speech setup can replace agent-shell's semantic header line with a
   generic Emacspeak header.
 - Every shell can autospeak, so concurrent background agents lack a clear
-  announcement policy or buffer identity.
+  announcement policy or buffer identity.  Focus-aware levels now suppress
+  background response and tool chatter by default; completed background turns
+  use the notification stream and identify their session.
 - Agent-shell does not currently provide a current-table-cell value or copy
   command.  The local logical-cell copy command should be replaced by advice
   that adds speech feedback if agent-shell gains a native command.
@@ -190,9 +192,10 @@ to both existing and newly created shell buffers.
 - Setting changes speak the selected value, not just "changed".  Session
   announcements include a short title or agent identity when ambiguity is
   possible.
-- Foreground output can autospeak normally.  Background output should default
-  to status/icon notifications with a buffer or session prefix for urgent
-  events; verbose background response speech should be opt-in.
+- Foreground output defaults to response speech without routine tool or thought
+  chatter.  Background output defaults to completion notifications with a
+  session prefix; verbose background response speech is opt-in.  Permissions
+  and errors remain audible at the quiet routine level.
 - Preserve agent-shell's header-line information and add speech access to it
   instead of replacing it.
 
@@ -276,8 +279,8 @@ viewport navigation and submission, and visible/background sessions.
 
 ## Open Decisions
 
-- Whether background sessions should be silent, icon/status only, or speak
-  complete responses by default.  Icon/status only is the proposed default.
+- Background sessions default to a named completion notification.  Foreground
+  sessions default to response speech, and both policies remain customizable.
 - Whether thought content should remain icon-only by default.  Preserve the
   current default until user testing indicates otherwise.
 - Whether an urgent permission should interrupt all current speech or only
