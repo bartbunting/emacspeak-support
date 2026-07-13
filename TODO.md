@@ -19,4 +19,5 @@
 ## General Improvements
 
 - [ ] Add automated tests for speech output
+- [ ] Implement the [agent-shell accessibility plan](agent-shell-accessibility-plan.md)
 - [ ] Document voice personality mappings in user guide
