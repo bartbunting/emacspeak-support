@@ -32,14 +32,16 @@ Completed so far:
 - public initialization, input, turn-completion, and error feedback with
   distinct normal, cancelled, limited, refused, and failed outcomes;
 - public tool-call status feedback with per-tool transition deduplication and
-  icon-only, summary, and full-output verbosity; and
+  icon-only, summary, and full-output verbosity;
+- current viewport compose submission and accepted-cancellation feedback,
+  including suppression of false success and declined-cancellation cues; and
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
 The lifecycle event path replaces heartbeat advice and suppresses delayed
 rendered duplicates without discarding pending agent response text.  Tool
 events likewise replace asynchronous private save advice and avoid repeating
-rendered tool output.  Idle events, background-session identity, and three
+rendered tool output.  Idle events, background-session identity, and two
 remaining compatibility failures are still open Phase 0/1 work.
 
 ## Findings
@@ -72,8 +74,9 @@ remaining compatibility failures are still open Phase 0/1 work.
 - Legacy advice is activated while the file loads.  Enable/disable does not
   fully manage existing buffers, event subscriptions, buffer-local timers, or
   cleanup.
-- Advice targets have already drifted: `agent-shell-viewport-submit` is not a
-  current function.
+- Viewport submission advice had drifted from the removed
+  `agent-shell-viewport-submit`; it now targets the current compose command and
+  remains covered by the advice-target compatibility test.
 - The only voice map names `agent-shell-mode-line`, which is not one of
   agent-shell's current semantic faces.  Agent-shell defines semantic shell
   and Markdown faces that are currently unmapped.

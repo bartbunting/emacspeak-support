@@ -776,11 +776,25 @@ and speak them after streaming pauses for a brief period."
     (emacspeak-icon 'task-done)
     (message "Viewport refreshed")))
 
-(defadvice agent-shell-viewport-submit (after emacspeak pre act comp)
+(defadvice agent-shell-viewport-compose-send (after emacspeak pre act comp)
   "Announce prompt submission."
   (when (ems-interactive-p)
     (emacspeak-icon 'close-object)
-    (message "Prompt submitted")))
+    (dtk-speak "Prompt submitted.")))
+
+(defadvice agent-shell-viewport-compose-cancel (around emacspeak pre act comp)
+  "Announce an accepted prompt composition cancellation."
+  (let ((interactive-p (ems-interactive-p))
+        (viewport-buffer (current-buffer))
+        (original-mode major-mode))
+    ad-do-it
+    (when (and interactive-p
+               (or (not (buffer-live-p viewport-buffer))
+                   (not (eq (current-buffer) viewport-buffer))
+                   (not (eq (buffer-local-value 'major-mode viewport-buffer)
+                            original-mode))))
+      (emacspeak-icon 'close-object)
+      (dtk-speak "Prompt composition cancelled."))))
 
 ;;;  Interactive Commands for Viewport
 
@@ -977,7 +991,8 @@ and speak them after streaming pauses for a brief period."
     (agent-shell-viewport--show-buffer after)
     (agent-shell-prompt-compose after)
     (agent-shell-viewport-refresh after)
-    (agent-shell-viewport-submit after)
+    (agent-shell-viewport-compose-send after)
+    (agent-shell-viewport-compose-cancel around)
     (agent-shell-viewport-view-mode after)
     (agent-shell-viewport-edit-mode after))
   "List of advised functions for Emacspeak agent-shell support.")

@@ -899,10 +899,82 @@ ENTRIES is an alist of qualified block IDs to body strings."
 
 (ert-deftest emacspeak-agent-shell-advice-targets-exist ()
   "Every configured advice target should exist in current agent-shell."
-  :expected-result :failed
   (should-not
    (seq-remove (lambda (entry) (fboundp (car entry)))
                emacspeak-agent-shell--advice-list)))
+
+(ert-deftest emacspeak-agent-shell-viewport-submit-announces-success ()
+  "A successful interactive viewport submission should be confirmed."
+  (let ((agent-shell-prefer-viewport-interaction t)
+        (agent-shell-session-strategy 'new-deferred)
+        sent)
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-viewport-edit-mode)
+      (cl-letf (((symbol-function
+                  'agent-shell-viewport-compose-send-and-wait-for-response)
+                 (lambda () (setq sent t))))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'agent-shell-viewport-compose-send))
+          '((icon close-object)
+            (speak "Prompt submitted."))))
+        (should sent)))))
+
+(ert-deftest emacspeak-agent-shell-viewport-submit-does-not-confirm-error ()
+  "A failed viewport submission should not produce a success cue."
+  (let ((agent-shell-prefer-viewport-interaction t)
+        (agent-shell-session-strategy 'new-deferred))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-viewport-edit-mode)
+      (cl-letf (((symbol-function
+                  'agent-shell-viewport-compose-send-and-wait-for-response)
+                 (lambda () (user-error "Nothing to send"))))
+        (should-not
+         (emacspeak-agent-shell-test--capture-events
+           (should-error
+            (call-interactively #'agent-shell-viewport-compose-send)
+            :type 'user-error)))))))
+
+(ert-deftest emacspeak-agent-shell-viewport-cancel-announces-accepted-only ()
+  "Viewport cancellation should distinguish acceptance from declining it."
+  (let ((shell-buffer (generate-new-buffer " *agent-shell-shell-test*"))
+        (agent-shell-prefer-viewport-interaction t))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "draft prompt")
+          (setq major-mode 'agent-shell-viewport-edit-mode)
+          (cl-letf (((symbol-function 'agent-shell-viewport--ensure-buffer)
+                     #'ignore)
+                    ((symbol-function 'agent-shell-viewport--shell-buffer)
+                     (lambda () shell-buffer))
+                    ((symbol-function 'shell-maker-history-position)
+                     (lambda () t))
+                    ((symbol-function 'agent-shell-viewport-view-last)
+                     (lambda ()
+                       (setq major-mode 'agent-shell-viewport-view-mode)))
+                    ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (call-interactively #'agent-shell-viewport-compose-cancel))
+              '((icon close-object)
+                (speak "Prompt composition cancelled."))))
+            (should (eq major-mode 'agent-shell-viewport-view-mode)))
+          (setq major-mode 'agent-shell-viewport-edit-mode)
+          (cl-letf (((symbol-function 'agent-shell-viewport--ensure-buffer)
+                     #'ignore)
+                    ((symbol-function 'agent-shell-viewport--shell-buffer)
+                     (lambda () shell-buffer))
+                    ((symbol-function 'shell-maker-history-position)
+                     (lambda () t))
+                    ((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+            (should-not
+             (emacspeak-agent-shell-test--capture-events
+               (call-interactively #'agent-shell-viewport-compose-cancel)))
+            (should (eq major-mode 'agent-shell-viewport-edit-mode))))
+      (when (buffer-live-p shell-buffer)
+        (kill-buffer shell-buffer)))))
 
 (ert-deftest emacspeak-agent-shell-configured-faces-exist ()
   "Every agent-shell face named by this integration should exist."
