@@ -71,6 +71,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-table-select-speaking-method
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-table-speak-context
+                  "emacspeak-agent-shell" ())
 
 (declare-function agent-shell--make-permission-button
                   "agent-shell" (&rest arguments))
@@ -971,6 +973,52 @@ ENTRIES is an alist of qualified block IDs to body strings."
            "Table speech: titles first; column titles on; row titles on."))))
       (should (equal emacspeak-agent-shell-table-titles '(column row)))
       (should-not keys))))
+
+(ert-deftest emacspeak-agent-shell-table-context-describes-header-and-data ()
+  "Manual table context should distinguish headers from one-based data rows."
+  (emacspeak-agent-shell-test--with-rendered-table
+      (concat "| Name | Role | Notes |\n"
+              "|---|---|---|\n"
+              "| Alice | Engineer | Builds |\n"
+              "| Bob | Reviewer | Checks |\n")
+    (goto-char (point-min))
+    (search-forward "Role")
+    (backward-char (length "Role"))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'emacspeak-agent-shell-table-speak-context))
+      '((icon item)
+        (speak
+         "Header row, column 2 of 3; table has 2 data rows."))))
+    (search-forward "Engineer")
+    (backward-char (length "Engineer"))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'emacspeak-agent-shell-table-speak-context))
+      '((icon item)
+        (speak "Data row 1 of 2, column 2 of 3."))))))
+
+(ert-deftest emacspeak-agent-shell-table-context-handles-headerless-and-outside ()
+  "Manual context should count headerless rows and reject non-table text."
+  (emacspeak-agent-shell-test--with-rendered-table
+      "| hello | world |\n| goodbye | moon |\n"
+    (goto-char (point-min))
+    (search-forward "world")
+    (backward-char (length "world"))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (call-interactively #'emacspeak-agent-shell-table-speak-context))
+      '((icon item) (speak "Row 1 of 2, column 2 of 2."))))
+    (goto-char (point-max))
+    (insert "\noutside")
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (should-error
+        (call-interactively #'emacspeak-agent-shell-table-speak-context)
+        :type 'user-error)))))
 
 (ert-deftest emacspeak-agent-shell-table-feedback-handles-title-cells-and-blanks ()
   "Table feedback should avoid duplicate titles and name blank data."

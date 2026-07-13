@@ -775,6 +775,12 @@ Markdown renderer."
             (let ((all-rows (plist-get parsed :rows)))
               (list
                :data (nth column-index current-row)
+               :row-index row-index
+               :row-count (length all-rows)
+               :column-index column-index
+               :column-count
+               (apply #'max 0 (mapcar #'length all-rows))
+               :column-titles-p column-titles-p
                :column-title
                (when column-titles-p
                  (nth column-index (car all-rows)))
@@ -817,6 +823,34 @@ Markdown renderer."
     (emacspeak-icon 'item)
     (dtk-speak (emacspeak-agent-shell--table-cell-speech cell))
     t))
+
+(defun emacspeak-agent-shell--table-context-speech (cell)
+  "Format the position and dimensions of semantic table CELL."
+  (let ((row-index (plist-get cell :row-index))
+        (row-count (plist-get cell :row-count))
+        (column (1+ (plist-get cell :column-index)))
+        (column-count (plist-get cell :column-count)))
+    (cond
+     ((and (plist-get cell :column-titles-p) (zerop row-index))
+      (let ((data-rows (1- row-count)))
+        (format "Header row, column %d of %d; table has %d data %s."
+                column column-count data-rows
+                (if (= data-rows 1) "row" "rows"))))
+     ((plist-get cell :column-titles-p)
+      (format "Data row %d of %d, column %d of %d."
+              row-index (1- row-count) column column-count))
+     (t
+      (format "Row %d of %d, column %d of %d."
+              (1+ row-index) row-count column column-count)))))
+
+(defun emacspeak-agent-shell-table-speak-context ()
+  "Speak current Markdown table position and dimensions."
+  (interactive)
+  (if-let ((cell (emacspeak-agent-shell--markdown-table-cell-at-point)))
+      (progn
+        (emacspeak-icon 'item)
+        (dtk-speak (emacspeak-agent-shell--table-context-speech cell)))
+    (user-error "Not in a rendered Markdown table")))
 
 (defun emacspeak-agent-shell--table-settings-speech ()
   "Return a complete spoken summary of the table speech settings."
