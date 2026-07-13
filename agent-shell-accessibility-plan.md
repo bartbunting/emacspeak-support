@@ -10,8 +10,8 @@ This plan covers `emacspeak-agent-shell.el` in this repository and its support
 for the current agent-shell interaction model.  The audit compared:
 
 - emacspeak-support at `da2f902`;
-- agent-shell `v0.59.1` (`14185ca`), rechecked before contextual block
-  navigation;
+- agent-shell `v0.59.1-2-g5351f9b` (`5351f9b`), rechecked before semantic
+  response completion;
 - Emacspeak `60.0-490-g7482f8e27`; and
 - Emacs 30.2 for static and replay checks.  Final compatibility checks must
   also use the repository's documented minimum of Emacs 31.
@@ -34,6 +34,10 @@ Completed so far:
   distinct normal, cancelled, limited, refused, and failed outcomes;
 - public tool-call status feedback with per-tool transition deduplication and
   icon-only, summary, and full-output verbosity;
+- semantic response delivery that records the latest rendered body under
+  agent-shell's real qualified ID and speaks it once at public turn completion;
+  network pauses no longer imply completion, and the private fragment-update
+  advice is removed;
 - current viewport compose submission and accepted-cancellation feedback,
   including suppression of false success and declined-cancellation cues;
 - preservation of agent-shell's text and graphical headers, with concise
@@ -64,11 +68,10 @@ Completed so far:
 - centralized, idempotent buffer teardown for pending speech, subscriptions,
   and caches on disable, major-mode change, and buffer death.
 
-The lifecycle event path replaces heartbeat advice and suppresses delayed
-rendered duplicates without discarding pending agent response text.  Tool
-events likewise replace asynchronous private save advice and avoid repeating
-rendered tool output.  Public idle events and the remaining Markdown face map
-are still open work.
+The lifecycle event path replaces heartbeat advice and supplies the reliable
+response boundary.  Tool events likewise replace asynchronous private save
+advice and avoid repeating rendered tool output.  Public idle feedback and
+explicit response summary/repeat commands are still open work.
 
 ### Transcript Block Navigation
 
@@ -147,9 +150,29 @@ session selector controls the backing shell from viewport mode.  Selecting
 `emacspeak-agent-shell-cycle-speech-level` command remains available through
 `M-x` for users who prefer repeated cycling.
 
+### Response Completion
+
+Only sections rendered during an active submitted turn are collected.  Each
+update replaces the stored snapshot for its real agent-shell qualified ID, so
+a streaming pause produces no speech and separate response fragments preserve
+their arrival order.  A successful public `turn-complete` event speaks the
+rendered snapshots once, followed by the completion cue.  Cancellation,
+failure, and public error events discard partial response text before their
+semantic outcome announcement.  Permission prompts interrupt speech without
+discarding the current answer snapshot.
+
+`emacspeak-agent-shell-speech-delay` remains defined for configuration
+compatibility but no longer determines completion.  Reloading support removes
+the former `agent-shell--update-fragment` advice, cancels any timer left by the
+older implementation, and installs the section collector in already enabled
+shell buffers without requiring a session restart.
+
 ## Findings
 
-### Highest-Priority Defects
+### Original Highest-Priority Defects
+
+These findings describe the audit baseline; completed corrections are recorded
+in Implementation Progress above.
 
 1. Permission block IDs are reduced to the text after their final hyphen.
    Current agent-shell permission IDs contain hyphens, so permission content
@@ -170,13 +193,17 @@ session selector controls the backing shell from viewport mode.  Selecting
 
 ### API and Lifecycle Risks
 
-- Response streaming advises private `agent-shell--update-fragment` and
-  reconstructs identity from request counts instead of using the supplied
-  namespace ID.
-- Restored user messages take a different update path and can bypass speech.
-- Legacy advice is activated while the file loads.  Enable/disable does not
-  fully manage existing buffers, event subscriptions, buffer-local timers, or
-  cleanup.
+- Response streaming now uses a buffer-local
+  `agent-shell-section-functions` collector and the public `turn-complete`
+  event.  The section hook is explicitly experimental upstream, so this
+  compatibility dependency remains isolated and covered by rendered-range and
+  qualified-ID tests.
+- Restored history renders outside an active submitted turn and is
+  intentionally excluded from automatic response speech; it remains available
+  through transcript navigation.
+- Reload migration explicitly removes the old fragment advice and cancels its
+  timers; enable/disable and buffer teardown manage the replacement hook and
+  all buffer-local response state.
 - Viewport submission advice had drifted from the removed
   `agent-shell-viewport-submit`; it now targets the current compose command and
   remains covered by the advice-target compatibility test.

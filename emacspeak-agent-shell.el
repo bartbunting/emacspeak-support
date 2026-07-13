@@ -308,20 +308,25 @@ properties while copying TEXT into its private scratch buffer."
     text))
 
 (defvar emacspeak-agent-shell--pending-speech-timer nil
-  "Timer for delayed speech after streaming completes.")
+  "Legacy timer left by pause-based response speech.
+New response capture uses semantic turn completion and never creates this
+timer.  It remains buffer-local so reloading or disabling support can cancel
+a timer created by an older loaded version.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-timer)
 
 (defvar emacspeak-agent-shell--pending-speech-qualified-ids nil
-  "List of qualified-ids for blocks pending speech, in arrival order.")
+  "List of rendered response qualified IDs pending speech, in arrival order.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-qualified-ids)
 
 (defvar emacspeak-agent-shell--pending-bodies nil
-  "Hash table mapping qualified-id to accumulated body text.
-Populated as streaming chunks arrive; consumed when the speech timer fires.")
+  "Hash table mapping qualified ID to its latest rendered response body.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-bodies)
+
+(defvar-local emacspeak-agent-shell--response-turn-active-p nil
+  "Non-nil while a submitted agent turn can produce response sections.")
 
 (defvar-local emacspeak-agent-shell--permission-subscription nil
   "Subscription token for permission request events in this shell.")
@@ -354,9 +359,9 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
   "Non-nil when agent-shell speech-level keys are active.")
 
 (defcustom emacspeak-agent-shell-speech-delay 0.5
-  "Delay in seconds before speaking completed streaming content.
-When agent output streams in chunks, wait this long after the last
-chunk arrives before speaking the complete text."
+  "Legacy delay retained for configuration compatibility.
+Response completion now follows agent-shell's public `turn-complete' event,
+so this value no longer determines when a response is spoken."
   :type 'number
   :group 'emacspeak-agent-shell)
 
@@ -798,13 +803,95 @@ selects the configured foreground or background level."
           'response buffer))))
 
 (defun emacspeak-agent-shell--cancel-pending-speech ()
-  "Cancel and discard delayed speech pending in the current shell."
+  "Cancel and discard response speech pending in the current shell."
   (when (timerp emacspeak-agent-shell--pending-speech-timer)
     (cancel-timer emacspeak-agent-shell--pending-speech-timer))
   (setq emacspeak-agent-shell--pending-speech-timer nil
         emacspeak-agent-shell--pending-speech-qualified-ids nil)
   (when (hash-table-p emacspeak-agent-shell--pending-bodies)
     (clrhash emacspeak-agent-shell--pending-bodies)))
+
+(defun emacspeak-agent-shell--response-section-snapshot (range)
+  "Return the qualified ID and rendered body represented by section RANGE.
+Return nil for a non-response section.  Agent-shell calls its experimental
+section hook after Markdown rendering, so the body retains semantic faces and
+omits markup that is no longer displayed."
+  (when-let* ((body-start (map-nested-elt range '(:body :start)))
+              ((< body-start (point-max)))
+              ((eq (get-text-property body-start 'agent-shell-ui-section)
+                   'body))
+              (state
+               (get-text-property body-start 'agent-shell-ui-state))
+              (qualified-id (map-elt state :qualified-id))
+              ((and (stringp qualified-id)
+                    (string-match-p
+                     "agent_message_chunk\\'" qualified-id)))
+              (body-end
+               (or (next-single-property-change
+                    body-start 'agent-shell-ui-section nil (point-max))
+                   (point-max)))
+              ((< body-start body-end))
+              (body
+               (string-trim
+                (buffer-substring body-start body-end)))
+              ((not (string-empty-p body))))
+    (cons qualified-id body)))
+
+(defun emacspeak-agent-shell--record-response-section (range)
+  "Record the latest rendered agent response represented by section RANGE."
+  (when emacspeak-agent-shell--response-turn-active-p
+    (when-let* ((snapshot
+                 (emacspeak-agent-shell--response-section-snapshot range))
+                (qualified-id (car snapshot))
+                (body (cdr snapshot)))
+      (unless (hash-table-p emacspeak-agent-shell--pending-bodies)
+        (setq emacspeak-agent-shell--pending-bodies
+              (make-hash-table :test #'equal)))
+      (puthash qualified-id body emacspeak-agent-shell--pending-bodies)
+      (unless (member qualified-id
+                      emacspeak-agent-shell--pending-speech-qualified-ids)
+        (setq emacspeak-agent-shell--pending-speech-qualified-ids
+              (append emacspeak-agent-shell--pending-speech-qualified-ids
+                      (list qualified-id)))))))
+
+(defun emacspeak-agent-shell--response-section-setup ()
+  "Install semantic rendered-response capture in the current shell."
+  ;; Cancel a pause timer that may survive reloading an older implementation.
+  (when (timerp emacspeak-agent-shell--pending-speech-timer)
+    (cancel-timer emacspeak-agent-shell--pending-speech-timer)
+    (setq emacspeak-agent-shell--pending-speech-timer nil))
+  (add-hook 'agent-shell-section-functions
+            #'emacspeak-agent-shell--record-response-section nil t)
+  ;; Enabling or reloading support during a live request should begin taking
+  ;; complete snapshots on its next rendered chunk.
+  (unless emacspeak-agent-shell--response-turn-active-p
+    (setq emacspeak-agent-shell--response-turn-active-p
+          (condition-case nil
+              (memq (agent-shell-status) '(busy blocked))
+            (error nil)))))
+
+(defun emacspeak-agent-shell--response-section-cleanup ()
+  "Remove semantic rendered-response capture from the current shell."
+  (remove-hook 'agent-shell-section-functions
+               #'emacspeak-agent-shell--record-response-section t)
+  (setq emacspeak-agent-shell--response-turn-active-p nil))
+
+(defun emacspeak-agent-shell--begin-response-turn ()
+  "Start collecting rendered responses for a newly submitted turn."
+  (emacspeak-agent-shell--cancel-pending-speech)
+  (setq emacspeak-agent-shell--response-turn-active-p t))
+
+(defun emacspeak-agent-shell--discard-response-turn ()
+  "Discard collected responses and finish the current turn."
+  (setq emacspeak-agent-shell--response-turn-active-p nil)
+  (emacspeak-agent-shell--cancel-pending-speech))
+
+(defun emacspeak-agent-shell--finish-response-turn ()
+  "Speak collected rendered responses once and finish the current turn."
+  (setq emacspeak-agent-shell--response-turn-active-p nil)
+  (emacspeak-agent-shell--deliver-pending-blocks
+   (current-buffer)
+   (copy-sequence emacspeak-agent-shell--pending-speech-qualified-ids)))
 
 (defun emacspeak-agent-shell--permission-announcement (event)
   "Return a semantic announcement for permission request EVENT."
@@ -851,9 +938,9 @@ selects the configured foreground or background level."
         (setq emacspeak-agent-shell--permission-action-cache
               (make-hash-table :test #'equal)))
       (puthash key actions emacspeak-agent-shell--permission-action-cache)))
-  ;; The private fragment advice has already seen the visual permission
-  ;; block.  Discard that delayed copy to avoid a duplicate announcement.
-  (emacspeak-agent-shell--cancel-pending-speech)
+  ;; Rendered-response capture ignores permission fragments, so an urgent
+  ;; request interrupts current speech without discarding the answer collected
+  ;; so far.  A later response update refreshes the complete body snapshot.
   (when emacspeak-agent-shell-speak-permissions
     (dtk-stop)
     (emacspeak-agent-shell--deliver-announcement
@@ -931,26 +1018,8 @@ selects the configured foreground or background level."
   (remove-hook 'change-major-mode-hook
                #'emacspeak-agent-shell--permission-event-cleanup t))
 
-(defun emacspeak-agent-shell--discard-pending-blocks (regexp)
-  "Discard delayed speech whose qualified block ID matches REGEXP.
-Leave unrelated pending agent content and its timer intact."
-  (when (hash-table-p emacspeak-agent-shell--pending-bodies)
-    (dolist (qualified-id emacspeak-agent-shell--pending-speech-qualified-ids)
-      (when (string-match-p regexp qualified-id)
-        (remhash qualified-id emacspeak-agent-shell--pending-bodies)))
-    (setq emacspeak-agent-shell--pending-speech-qualified-ids
-          (seq-remove
-           (lambda (qualified-id) (string-match-p regexp qualified-id))
-           emacspeak-agent-shell--pending-speech-qualified-ids))
-    (when (and (null emacspeak-agent-shell--pending-speech-qualified-ids)
-               (timerp emacspeak-agent-shell--pending-speech-timer))
-      (cancel-timer emacspeak-agent-shell--pending-speech-timer)
-      (setq emacspeak-agent-shell--pending-speech-timer nil))))
-
 (defun emacspeak-agent-shell--speak-agent-error (event)
   "Announce the ACP error described by lifecycle EVENT."
-  (emacspeak-agent-shell--discard-pending-blocks
-   "-\\(?:failed-\\|Error\\(?:-\\|$\\)\\)")
   (let* ((data (map-elt event :data))
          (message (map-elt data :message))
          (code (map-elt data :code))
@@ -977,7 +1046,6 @@ Leave unrelated pending agent content and its timer intact."
             (dtk-notify
              (format "%s finished."
                      (emacspeak-agent-shell--session-label)))))
-      (emacspeak-agent-shell--discard-pending-blocks "-stop-reason$")
       (pcase stop-reason
         ("cancelled"
          (emacspeak-agent-shell--deliver-announcement
@@ -1002,21 +1070,34 @@ Leave unrelated pending agent content and its timer intact."
 
 (defun emacspeak-agent-shell--handle-lifecycle-event (event)
   "Provide semantic processing feedback for public agent-shell EVENT."
-  (when (and (memq (map-elt event :event) '(turn-complete error))
-             (hash-table-p emacspeak-agent-shell--tool-call-status-cache))
-    (clrhash emacspeak-agent-shell--tool-call-status-cache))
-  (when emacspeak-agent-shell-signal-processing
-    (pcase (map-elt event :event)
-      ((or 'init-started 'input-submitted)
-       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
-         (emacspeak-icon emacspeak-agent-shell-processing-start-icon)))
-      ('init-finished
-       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
-         (emacspeak-icon emacspeak-agent-shell-processing-end-icon)))
+  (let ((event-type (map-elt event :event)))
+    ;; Response collection is independent of lifecycle cue preferences.
+    ;; `turn-complete' is the semantic boundary: no network-pause timer is
+    ;; allowed to deliver a partial response.
+    (pcase event-type
+      ('input-submitted
+       (emacspeak-agent-shell--begin-response-turn))
       ('turn-complete
-       (emacspeak-agent-shell--speak-turn-completion event))
+       (if (equal (map-nested-elt event '(:data :stop-reason)) "end_turn")
+           (emacspeak-agent-shell--finish-response-turn)
+         (emacspeak-agent-shell--discard-response-turn)))
       ('error
-       (emacspeak-agent-shell--speak-agent-error event)))))
+       (emacspeak-agent-shell--discard-response-turn)))
+    (when (and (memq event-type '(turn-complete error))
+               (hash-table-p emacspeak-agent-shell--tool-call-status-cache))
+      (clrhash emacspeak-agent-shell--tool-call-status-cache))
+    (when emacspeak-agent-shell-signal-processing
+      (pcase event-type
+        ((or 'init-started 'input-submitted)
+         (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+           (emacspeak-icon emacspeak-agent-shell-processing-start-icon)))
+        ('init-finished
+         (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
+           (emacspeak-icon emacspeak-agent-shell-processing-end-icon)))
+        ('turn-complete
+         (emacspeak-agent-shell--speak-turn-completion event))
+        ('error
+         (emacspeak-agent-shell--speak-agent-error event))))))
 
 (defun emacspeak-agent-shell--lifecycle-event-setup ()
   "Subscribe the current agent-shell buffer to lifecycle events."
@@ -1037,16 +1118,8 @@ Leave unrelated pending agent content and its timer intact."
   (remove-hook 'change-major-mode-hook
                #'emacspeak-agent-shell--lifecycle-event-cleanup t))
 
-(defun emacspeak-agent-shell--tool-call-block-handled-p (block-id)
-  "Return non-nil when tool BLOCK-ID has public event feedback."
-  (when (and (stringp block-id)
-             (hash-table-p emacspeak-agent-shell--tool-call-status-cache))
-    (member (gethash block-id emacspeak-agent-shell--tool-call-status-cache)
-            '("pending" "in_progress" "completed" "failed"))))
-
-(defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
-  "Execute delayed speech of blocks identified by QUALIFIED-IDS in BUFFER.
-This is called after streaming has completed."
+(defun emacspeak-agent-shell--deliver-pending-blocks (buffer qualified-ids)
+  "Deliver pending QUALIFIED-IDS from BUFFER and clear their stored bodies."
   (cl-declare (special dtk-speaker-process))
   (when (and buffer (buffer-live-p buffer))
     (with-current-buffer buffer
@@ -1070,6 +1143,12 @@ This is called after streaming has completed."
         (clrhash emacspeak-agent-shell--pending-bodies))
       (setq emacspeak-agent-shell--pending-speech-qualified-ids nil)
       (setq emacspeak-agent-shell--pending-speech-timer nil))))
+
+(defun emacspeak-agent-shell--execute-delayed-speech (buffer qualified-ids)
+  "Deliver pending QUALIFIED-IDS left by an older timer in BUFFER.
+Retained so a timer created by a previously loaded pause-based implementation
+can finish safely while support is being reloaded."
+  (emacspeak-agent-shell--deliver-pending-blocks buffer qualified-ids))
 
 (defun emacspeak-agent-shell--classify-block (block-id)
   "Classify BLOCK-ID to determine content type.
@@ -1217,59 +1296,24 @@ Provide an auditory icon if possible."
     (emacspeak-icon 'close-object)
     (message "Agent interrupted")))
 
-;;;  Output Monitoring - Core Advice
+;;;  Output Monitoring
 
-(defadvice agent-shell--update-fragment (around emacspeak pre act comp)
-  "Speak agent-shell content after streaming completes.
-Instead of speaking each chunk as it arrives, accumulate all blocks
-and speak them after streaming pauses for a brief period."
-  (let* ((args (ad-get-args 0))
-         (state (plist-get args :state))
-         (block-id (plist-get args :block-id))
-         (body (plist-get args :body))
-         (create-new (plist-get args :create-new))
-         (append-p (plist-get args :append))
-         (buffer (map-elt state :buffer)))
-    ;; Execute the original function
-    ad-do-it
-    ;; Handle speech with delayed approach
-    (when (and buffer (buffer-live-p buffer) body
-               (not (emacspeak-agent-shell--tool-call-block-handled-p
-                     block-id))
-               (emacspeak-agent-shell--should-speak-p buffer))
-      (with-current-buffer buffer
-        ;; Cancel any existing timer
-        (when emacspeak-agent-shell--pending-speech-timer
-          (cancel-timer emacspeak-agent-shell--pending-speech-timer))
-        ;; Lazily create the per-buffer body store
-        (unless emacspeak-agent-shell--pending-bodies
-          (setq emacspeak-agent-shell--pending-bodies
-                (make-hash-table :test 'equal)))
-        ;; Build qualified-id (namespace-id + block-id) and accumulate body
-        (let* ((namespace-id (map-elt state :request-count))
-               (qualified-id (format "%s-%s" namespace-id block-id))
-               (existing (gethash qualified-id
-                                  emacspeak-agent-shell--pending-bodies)))
-          (puthash qualified-id
-                   (if (and append-p existing)
-                       (concat existing body)
-                     body)
-                   emacspeak-agent-shell--pending-bodies)
-          (unless (member qualified-id
-                          emacspeak-agent-shell--pending-speech-qualified-ids)
-            ;; Keep arrival order: append to end rather than push to head.
-            (setq emacspeak-agent-shell--pending-speech-qualified-ids
-                  (append emacspeak-agent-shell--pending-speech-qualified-ids
-                          (list qualified-id)))))
-        ;; Set a timer to speak after the delay
-        (setq emacspeak-agent-shell--pending-speech-timer
-              (run-with-timer
-               emacspeak-agent-shell-speech-delay
-               nil
-               #'emacspeak-agent-shell--execute-delayed-speech
-               buffer
-               (copy-sequence emacspeak-agent-shell--pending-speech-qualified-ids))))))
-  ad-return-value)
+(defun emacspeak-agent-shell--upgrade-response-monitoring ()
+  "Remove pause-based advice and upgrade already enabled shell buffers."
+  (when (ad-find-advice 'agent-shell--update-fragment 'around 'emacspeak)
+    (ad-disable-advice 'agent-shell--update-fragment 'around 'emacspeak)
+    (ad-remove-advice 'agent-shell--update-fragment 'around 'emacspeak)
+    (ad-activate 'agent-shell--update-fragment))
+  ;; Reloading this file preserves buffer-local subscription tokens.  They
+  ;; identify buffers where support was already enabled and need the new local
+  ;; section hook immediately, without restarting their sessions.
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'agent-shell-mode)
+                 emacspeak-agent-shell--lifecycle-subscription)
+        (emacspeak-agent-shell--response-section-setup)))))
+
+(emacspeak-agent-shell--upgrade-response-monitoring)
 
 ;;;  Navigation Commands
 
@@ -2933,6 +2977,7 @@ the corresponding buffer boundary."
             #'emacspeak-agent-shell--buffer-cleanup nil t)
   (add-hook 'change-major-mode-hook
             #'emacspeak-agent-shell--buffer-cleanup nil t)
+  (emacspeak-agent-shell--response-section-setup)
   (emacspeak-agent-shell--permission-event-setup)
   (emacspeak-agent-shell--lifecycle-event-setup)
   (emacspeak-agent-shell--tool-call-event-setup)
@@ -2940,6 +2985,7 @@ the corresponding buffer boundary."
 
 (defun emacspeak-agent-shell--buffer-cleanup ()
   "Cancel speech work and remove all support state from this shell buffer."
+  (emacspeak-agent-shell--response-section-cleanup)
   (emacspeak-agent-shell--cancel-pending-speech)
   (setq emacspeak-agent-shell--pending-bodies nil)
   (emacspeak-agent-shell--permission-event-cleanup)
@@ -2963,7 +3009,6 @@ the corresponding buffer boundary."
     (agent-shell-toggle after)
     (agent-shell-other-buffer after)
     (agent-shell-interrupt after)
-    (agent-shell--update-fragment around)
     (agent-shell-next-item around)
     (agent-shell-previous-item around)
     (agent-shell-jump-to-latest-permission-button-row after)
@@ -2986,6 +3031,7 @@ the corresponding buffer boundary."
 (defun emacspeak-agent-shell-enable ()
   "Enable Emacspeak support for agent-shell."
   (interactive)
+  (emacspeak-agent-shell--upgrade-response-monitoring)
   (dolist (advice emacspeak-agent-shell--advice-list)
     (ad-enable-advice (car advice) (cadr advice) 'emacspeak)
     (ad-activate (car advice)))

@@ -23,6 +23,7 @@
 (defvar emacspeak-agent-shell--pending-bodies)
 (defvar emacspeak-agent-shell--pending-speech-qualified-ids)
 (defvar emacspeak-agent-shell--pending-speech-timer)
+(defvar emacspeak-agent-shell--response-turn-active-p)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
 (defvar emacspeak-agent-shell--markdown-face-voice-map)
@@ -50,6 +51,7 @@
 (defvar emacspeak-comint-autospeak)
 (defvar dtk-yank-excluded-properties)
 (defvar agent-shell--state)
+(defvar agent-shell-section-functions)
 (defvar agent-shell-header-style)
 (defvar agent-shell-mode-map)
 (defvar agent-shell-show-context-usage-indicator)
@@ -109,6 +111,12 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--prepare-speech-text
                   "emacspeak-agent-shell" (text))
+(declare-function emacspeak-agent-shell--record-response-section
+                  "emacspeak-agent-shell" (range))
+(declare-function emacspeak-agent-shell--response-section-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--response-section-setup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--speech-copy-without-yank-handler
                   "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--install-speech-control-bindings
@@ -306,6 +314,23 @@ ENTRIES is an alist of qualified block IDs to body strings."
               "after\n"))
      (agent-shell-markdown-replace-markup)
      ,@body))
+
+(cl-defun emacspeak-agent-shell-test--render-response-section
+    (&key namespace-id block-id body append create-new)
+  "Render and publish one response section update for deterministic tests."
+  (let ((range
+         (agent-shell-ui-update-fragment
+          (agent-shell-ui-make-fragment-model
+           :namespace-id namespace-id :block-id block-id :body body)
+          :append append :create-new create-new :navigation 'never)))
+    (when-let* ((body-range (map-elt range :body)))
+      (let ((inhibit-read-only t))
+        (save-restriction
+          (narrow-to-region (map-elt body-range :start)
+                            (map-elt body-range :end))
+          (agent-shell-markdown-replace-markup))))
+    (run-hook-with-args 'agent-shell-section-functions range)
+    range))
 
 (defmacro emacspeak-agent-shell-test--with-semantic-blocks (&rest body)
   "Create representative agent-shell transcript blocks, then run BODY."
@@ -856,12 +881,98 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (kill-buffer buffer)))))
 
 (ert-deftest emacspeak-agent-shell-delayed-agent-message-speaks-once ()
-  "A complete agent message should be delivered once."
+  "The legacy pending-body delivery helper should remain compatible."
   (should
    (equal
     (emacspeak-agent-shell-test--speak-pending
      '(("request-agent_message_chunk" . "Complete response")))
     '((speak "Complete response")))))
+
+(ert-deftest emacspeak-agent-shell-rendered-response-waits-for-turn-complete ()
+  "Rendered snapshots should stay silent through pauses and speak once."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (setq-local emacspeak-comint-autospeak t)
+    (setq-local agent-shell-section-functions nil)
+    (emacspeak-agent-shell--response-section-setup)
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--handle-lifecycle-event
+         '((:event . input-submitted)))
+        (emacspeak-agent-shell-test--render-response-section
+         :namespace-id "request" :block-id "1-agent_message_chunk"
+         :body "Partial **response**")
+        ;; A pause longer than the legacy delay must not imply completion.
+        (let ((emacspeak-agent-shell-speech-delay 0.001))
+          (sit-for 0.01)))
+      '((icon progress))))
+    (should emacspeak-agent-shell--response-turn-active-p)
+    (should-not emacspeak-agent-shell--pending-speech-timer)
+    (should
+     (equal
+      (gethash "request-1-agent_message_chunk"
+               emacspeak-agent-shell--pending-bodies)
+      "Partial response"))
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "request" :block-id "1-agent_message_chunk"
+     :body "Complete **response**")
+    (let* ((events
+            (emacspeak-agent-shell-test--capture-events
+              (emacspeak-agent-shell--handle-lifecycle-event
+               '((:event . turn-complete)
+                 (:data (:stop-reason . "end_turn"))))))
+           (speech (cadr (car events))))
+      (should
+       (equal events
+              '((speak "Complete response")
+                (icon task-done))))
+      (should
+       (eq (emacspeak-agent-shell-test--face-at-text speech "response")
+           'agent-shell-markdown-bold)))
+    (should-not emacspeak-agent-shell--response-turn-active-p)
+    (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+    (should (= 0 (hash-table-count
+                  emacspeak-agent-shell--pending-bodies)))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--handle-lifecycle-event
+         '((:event . turn-complete)
+           (:data (:stop-reason . "end_turn")))))
+      '((icon task-done))))))
+
+(ert-deftest emacspeak-agent-shell-response-sections-use-real-id-and-order ()
+  "Multiple rendered responses should retain qualified IDs and arrival order."
+  (let ((emacspeak-agent-shell-signal-processing nil))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local agent-shell-section-functions
+                  '(emacspeak-agent-shell--record-response-section))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . input-submitted)))
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "1-agent_message_chunk"
+           :body "First answer")
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "agent_thought_chunk"
+           :body "Do not collect" :create-new t)
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "2-agent_message_chunk"
+           :body "Second answer" :create-new t)
+          (should
+           (equal emacspeak-agent-shell--pending-speech-qualified-ids
+                  '("7-1-agent_message_chunk"
+                    "7-2-agent_message_chunk")))
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . turn-complete)
+             (:data (:stop-reason . "end_turn")))))
+        '((speak "First answer")
+          (speak "Second answer")))))))
 
 (ert-deftest emacspeak-agent-shell-user-message-fixture-is-semantic ()
   "A restored user-message fixture should retain its speaker identity."
@@ -965,8 +1076,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
 
 (ert-deftest emacspeak-agent-shell-permission-subscription-is-idempotent ()
   "The public permission subscription should install once and clean up."
-  (let ((buffer (generate-new-buffer " *agent-shell-permission-test*"))
-        timer)
+  (let ((buffer (generate-new-buffer " *agent-shell-permission-test*")))
     (unwind-protect
         (with-current-buffer buffer
           (setq major-mode 'agent-shell-mode)
@@ -987,13 +1097,11 @@ Return speech events plus the target character.  DIRECTION is `forward' or
               (should (= 2 (length (map-elt
                                     agent-shell--state
                                     :event-subscriptions)))))
-            (setq timer (run-with-timer 3600 nil #'ignore))
-            (setq-local emacspeak-agent-shell--pending-speech-timer timer
-                        emacspeak-agent-shell--pending-speech-qualified-ids
-                        '("fixture-permission"))
+            (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                        '("1-agent_message_chunk"))
             (setq-local emacspeak-agent-shell--pending-bodies
                         (make-hash-table :test #'equal))
-            (puthash "fixture-permission" "duplicate"
+            (puthash "1-agent_message_chunk" "Pending answer"
                      emacspeak-agent-shell--pending-bodies)
             (should
              (equal
@@ -1005,9 +1113,10 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                    :event 'permission-request :data data)))
               (emacspeak-agent-shell-test--expected-permission-events
                (list event))))
-            (should-not emacspeak-agent-shell--pending-speech-timer)
-            (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
-            (should (= 0 (hash-table-count
+            (should
+             (equal emacspeak-agent-shell--pending-speech-qualified-ids
+                    '("1-agent_message_chunk")))
+            (should (= 1 (hash-table-count
                           emacspeak-agent-shell--pending-bodies)))
             (should (= 1 (hash-table-count
                           emacspeak-agent-shell--permission-action-cache)))
@@ -1018,21 +1127,19 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should-not emacspeak-agent-shell--permission-action-cache)
             (should-not (map-elt agent-shell--state
                                  :event-subscriptions))))
-      (when (timerp timer)
-        (cancel-timer timer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest emacspeak-agent-shell-permission-announcement-can-be-disabled ()
-  "Disabling permission speech should also suppress the delayed duplicate."
+  "Disabling permission speech should leave a pending response untouched."
   (let ((emacspeak-agent-shell-speak-permissions nil))
     (with-temp-buffer
       (setq-local emacspeak-agent-shell--pending-bodies
                   (make-hash-table :test #'equal))
-      (puthash "fixture-permission" "duplicate"
+      (puthash "1-agent_message_chunk" "Pending answer"
                emacspeak-agent-shell--pending-bodies)
       (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
-                  '("fixture-permission"))
+                  '("1-agent_message_chunk"))
       (should-not
        (emacspeak-agent-shell-test--capture-events
          (emacspeak-agent-shell--handle-permission-request
@@ -1041,8 +1148,10 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                    (:tool-call (:title . "Run command")
                                (:permission-actions
                                 ((:option . "Allow")))))))))
-      (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
-      (should (= 0 (hash-table-count
+      (should
+       (equal emacspeak-agent-shell--pending-speech-qualified-ids
+              '("1-agent_message_chunk")))
+      (should (= 1 (hash-table-count
                     emacspeak-agent-shell--pending-bodies))))))
 
 (ert-deftest emacspeak-agent-shell-permission-responses-are-semantic ()
@@ -1438,11 +1547,15 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (emacspeak-agent-shell-speak-tool-calls t))
     (unwind-protect
         (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
           (setq-local emacspeak-comint-autospeak t)
-          (setq-local emacspeak-agent-shell--pending-bodies
-                      (make-hash-table :test #'equal))
-          (puthash "1-agent_message_chunk" "Do not speak this response"
-                   emacspeak-agent-shell--pending-bodies)
+          (setq-local agent-shell-section-functions
+                      '(emacspeak-agent-shell--record-response-section))
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . input-submitted)))
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "1" :block-id "1-agent_message_chunk"
+           :body "Do not speak this response")
           (should
            (equal
             (emacspeak-agent-shell-test--capture-events
@@ -1451,13 +1564,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                     (((symbol-function
                        'emacspeak-agent-shell--session-focused-p)
                       (lambda (&optional _buffer) nil)))
-                  (emacspeak-agent-shell--execute-delayed-speech
-                   buffer '("1-agent_message_chunk"))
                   (emacspeak-agent-shell--handle-tool-call-update
                    (emacspeak-agent-shell-test--tool-call-event
                     "reader" "completed" "Read README"))
-                  (emacspeak-agent-shell--handle-lifecycle-event
-                   '((:event . input-submitted)))
                   (emacspeak-agent-shell--handle-lifecycle-event
                    '((:event . turn-complete)
                      (:data (:stop-reason . "end_turn")))))))
@@ -1575,41 +1684,54 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest emacspeak-agent-shell-lifecycle-suppresses-rendered-duplicate ()
-  "Public error feedback should preserve content but drop its visual duplicate."
-  (let ((emacspeak-agent-shell-signal-processing t)
-        timer)
-    (unwind-protect
-        (with-temp-buffer
-          (setq-local emacspeak-agent-shell--pending-bodies
-                      (make-hash-table :test #'equal))
-          (puthash "1-agent_message_chunk" "Useful partial response"
-                   emacspeak-agent-shell--pending-bodies)
-          (puthash "1-failed-1-id:?-code:500" "Connection lost"
-                   emacspeak-agent-shell--pending-bodies)
-          (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
-                      '("1-agent_message_chunk"
-                        "1-failed-1-id:?-code:500"))
-          (setq timer (run-with-timer 3600 nil #'ignore))
-          (setq-local emacspeak-agent-shell--pending-speech-timer timer)
-          (should
-           (equal
-            (emacspeak-agent-shell-test--capture-events
-              (emacspeak-agent-shell--handle-lifecycle-event
-               '((:event . error)
-                 (:data (:message . "Connection lost")))))
-            '((icon warn-user)
-              (speak "Agent error: Connection lost"))))
-          (should (gethash "1-agent_message_chunk"
-                           emacspeak-agent-shell--pending-bodies))
-          (should-not (gethash "1-failed-1-id:?-code:500"
-                               emacspeak-agent-shell--pending-bodies))
-          (should
-           (equal emacspeak-agent-shell--pending-speech-qualified-ids
-                  '("1-agent_message_chunk")))
-          (should (timerp emacspeak-agent-shell--pending-speech-timer)))
-      (when (timerp timer)
-        (cancel-timer timer)))))
+(ert-deftest emacspeak-agent-shell-error-discards-partial-response ()
+  "Public error feedback should not leave partial response speech pending."
+  (let ((emacspeak-agent-shell-signal-processing t))
+    (with-temp-buffer
+      (setq-local emacspeak-agent-shell--response-turn-active-p t)
+      (setq-local emacspeak-agent-shell--pending-bodies
+                  (make-hash-table :test #'equal))
+      (puthash "1-agent_message_chunk" "Partial response"
+               emacspeak-agent-shell--pending-bodies)
+      (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                  '("1-agent_message_chunk"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . error)
+             (:data (:message . "Connection lost")))))
+        '((icon warn-user)
+          (speak "Agent error: Connection lost"))))
+      (should-not emacspeak-agent-shell--response-turn-active-p)
+      (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+      (should (= 0 (hash-table-count
+                    emacspeak-agent-shell--pending-bodies))))))
+
+(ert-deftest emacspeak-agent-shell-cancellation-discards-partial-response ()
+  "A cancelled turn should announce its outcome without speaking its partial."
+  (let ((emacspeak-agent-shell-signal-processing t))
+    (with-temp-buffer
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local emacspeak-agent-shell--response-turn-active-p t)
+      (setq-local emacspeak-agent-shell--pending-bodies
+                  (make-hash-table :test #'equal))
+      (puthash "1-agent_message_chunk" "Do not speak this partial"
+               emacspeak-agent-shell--pending-bodies)
+      (setq-local emacspeak-agent-shell--pending-speech-qualified-ids
+                  '("1-agent_message_chunk"))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . turn-complete)
+             (:data (:stop-reason . "cancelled")))))
+        '((icon close-object)
+          (speak "Agent turn cancelled."))))
+      (should-not emacspeak-agent-shell--response-turn-active-p)
+      (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+      (should (= 0 (hash-table-count
+                    emacspeak-agent-shell--pending-bodies))))))
 
 (ert-deftest emacspeak-agent-shell-lifecycle-feedback-can-be-disabled ()
   "The lifecycle option should suppress all lifecycle feedback."
@@ -1670,9 +1792,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         '((icon item)
           (icon progress)
           (icon task-done)
-          (icon warn-user))))
-      (should-not
-       (emacspeak-agent-shell--tool-call-block-handled-p "future")))))
+          (icon warn-user)))))))
 
 (ert-deftest emacspeak-agent-shell-tool-full-verbosity-speaks-output ()
   "Full verbosity should speak terminal text after its status summary."
@@ -1722,8 +1842,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         '((icon progress)
           (speak "Tool started: Read README."))))
       (should (= 1 (hash-table-count
-                    emacspeak-agent-shell--tool-call-status-cache)))
-      (should (emacspeak-agent-shell--tool-call-block-handled-p "reader")))))
+                    emacspeak-agent-shell--tool-call-status-cache))))))
 
 (ert-deftest emacspeak-agent-shell-tool-subscription-cleans-state ()
   "Tool subscriptions and status state should install and clean up once."
@@ -2956,7 +3075,11 @@ Return speech events plus the target character.  DIRECTION is `forward' or
   "Every configured advice target should exist in current agent-shell."
   (should-not
    (seq-remove (lambda (entry) (fboundp (car entry)))
-               emacspeak-agent-shell--advice-list)))
+               emacspeak-agent-shell--advice-list))
+  (should-not (assq 'agent-shell--update-fragment
+                    emacspeak-agent-shell--advice-list))
+  (should-not
+   (ad-find-advice 'agent-shell--update-fragment 'around 'emacspeak)))
 
 (ert-deftest emacspeak-agent-shell-viewport-submit-announces-success ()
   "A successful interactive viewport submission should be confirmed."
@@ -3216,6 +3339,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should (memq #'emacspeak-agent-shell--buffer-cleanup
                           change-major-mode-hook))
             (should
+             (memq #'emacspeak-agent-shell--record-response-section
+                   agent-shell-section-functions))
+            (should
              (memq #'emacspeak-agent-shell--table-navigation-post-command
                    post-command-hook)))
           (emacspeak-agent-shell-disable)
@@ -3226,6 +3352,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
             (should-not emacspeak-agent-shell--pending-speech-timer)
             (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
             (should-not emacspeak-agent-shell--pending-bodies)
+            (should-not emacspeak-agent-shell--response-turn-active-p)
             (should-not emacspeak-agent-shell--permission-subscription)
             (should-not
              emacspeak-agent-shell--permission-response-subscription)
@@ -3239,6 +3366,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                               kill-buffer-hook))
             (should-not (memq #'emacspeak-agent-shell--buffer-cleanup
                               change-major-mode-hook))
+            (should-not
+             (memq #'emacspeak-agent-shell--record-response-section
+                   agent-shell-section-functions))
             (should-not
              (memq #'emacspeak-agent-shell--table-navigation-post-command
                    post-command-hook))))
@@ -3271,6 +3401,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                         (make-hash-table :test #'equal))
             (puthash "pending" "text"
                      emacspeak-agent-shell--pending-bodies)
+            (should
+             (memq #'emacspeak-agent-shell--record-response-section
+                   agent-shell-section-functions))
             (fundamental-mode))
           (sit-for 0.15)
           (should-not fired)
@@ -3278,7 +3411,11 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (with-current-buffer buffer
             (should-not emacspeak-agent-shell--pending-speech-timer)
             (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
-            (should-not emacspeak-agent-shell--pending-bodies)))
+            (should-not emacspeak-agent-shell--pending-bodies)
+            (should-not emacspeak-agent-shell--response-turn-active-p)
+            (should-not
+             (memq #'emacspeak-agent-shell--record-response-section
+                   agent-shell-section-functions))))
       (when (timerp timer)
         (cancel-timer timer))
       (when (buffer-live-p buffer)
