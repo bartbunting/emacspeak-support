@@ -463,13 +463,17 @@ selects the configured foreground or background level."
         (emacspeak-agent-shell--effective-speech-level shell-buffer))))))
 
 (defvar emacspeak-agent-shell--speech-control-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-q")
-                #'emacspeak-agent-shell-select-speech-level)
-    (define-key map (kbd "C-c C-S-q")
-                #'emacspeak-agent-shell-select-background-speech-level)
-    map)
+  (make-sparse-keymap)
   "Keymap for agent-shell speech-level controls.")
+
+(defun emacspeak-agent-shell--install-speech-control-bindings ()
+  "Install current speech controls, including when this file is reloaded."
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-q")
+              #'emacspeak-agent-shell-select-speech-level)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-S-q")
+              #'emacspeak-agent-shell-select-background-speech-level))
+
+(emacspeak-agent-shell--install-speech-control-bindings)
 
 (unless (assq 'emacspeak-agent-shell--speech-control-active
               minor-mode-map-alist)

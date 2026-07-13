@@ -31,6 +31,7 @@
 (defvar emacspeak-agent-shell--table-navigation-map)
 (defvar emacspeak-agent-shell--table-navigation-table-start)
 (defvar emacspeak-agent-shell--speech-control-active)
+(defvar emacspeak-agent-shell--speech-control-map)
 (defvar emacspeak-agent-shell-processing-end-icon)
 (defvar emacspeak-agent-shell-processing-start-icon)
 (defvar emacspeak-agent-shell-signal-processing)
@@ -74,6 +75,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--session-focused-p
                   "emacspeak-agent-shell" (&optional buffer))
+(declare-function emacspeak-agent-shell--install-speech-control-bindings
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-cycle-speech-level
                   "emacspeak-agent-shell" (&optional reset))
 (declare-function emacspeak-agent-shell-select-background-speech-level
@@ -796,6 +799,28 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (cancel-timer timer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-speech-bindings-upgrade-live-map ()
+  "Reloading support should replace cycling and install the shifted selector."
+  (let* ((map emacspeak-agent-shell--speech-control-map)
+         (current-key (kbd "C-c C-q"))
+         (background-key (kbd "C-c C-S-q"))
+         (saved-current (lookup-key map current-key))
+         (saved-background (lookup-key map background-key)))
+    (unwind-protect
+        (progn
+          (define-key map current-key
+                      #'emacspeak-agent-shell-cycle-speech-level)
+          (define-key map background-key nil)
+          (emacspeak-agent-shell--install-speech-control-bindings)
+          (should
+           (eq (lookup-key map current-key)
+               #'emacspeak-agent-shell-select-speech-level))
+          (should
+           (eq (lookup-key map background-key)
+               #'emacspeak-agent-shell-select-background-speech-level)))
+      (define-key map current-key saved-current)
+      (define-key map background-key saved-background))))
 
 (ert-deftest emacspeak-agent-shell-speech-level-control-works-in-viewport ()
   "Viewport selectors should target the shell and remain active in tables."
