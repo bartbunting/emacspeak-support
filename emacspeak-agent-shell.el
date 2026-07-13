@@ -1628,6 +1628,7 @@ the corresponding buffer boundary."
   "Discover, enter, traverse, and leave rendered tables semantically."
   (let ((interactive-p (ems-interactive-p))
         (origin (point))
+        (modification-tick (buffer-chars-modified-tick))
         (started-in-table-p
          (get-text-property (point) 'agent-shell-markdown-table-source))
         handled-p)
@@ -1637,7 +1638,10 @@ the corresponding buffer boundary."
           (setq handled-p t)
           (emacspeak-agent-shell--table-exit 'forward))
       ad-do-it)
-    (when (and interactive-p (not handled-p))
+    ;; Plain n self-inserts at a live prompt; a text change is not navigation.
+    (when (and interactive-p
+               (not handled-p)
+               (= modification-tick (buffer-chars-modified-tick)))
       (unless (or (and (not started-in-table-p)
                        (emacspeak-agent-shell--table-discovery-feedback
                         origin 'forward))
@@ -1650,6 +1654,7 @@ the corresponding buffer boundary."
   "Discover, enter, traverse, and leave rendered tables semantically."
   (let ((interactive-p (ems-interactive-p))
         (origin (point))
+        (modification-tick (buffer-chars-modified-tick))
         (started-in-table-p
          (get-text-property (point) 'agent-shell-markdown-table-source))
         handled-p)
@@ -1659,7 +1664,10 @@ the corresponding buffer boundary."
           (setq handled-p t)
           (emacspeak-agent-shell--table-exit 'backward))
       ad-do-it)
-    (when (and interactive-p (not handled-p))
+    ;; Plain p self-inserts at a live prompt; a text change is not navigation.
+    (when (and interactive-p
+               (not handled-p)
+               (= modification-tick (buffer-chars-modified-tick)))
       (unless (or (and (not started-in-table-p)
                        (emacspeak-agent-shell--table-discovery-feedback
                         origin 'backward))

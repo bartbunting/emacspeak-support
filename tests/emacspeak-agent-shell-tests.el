@@ -42,6 +42,7 @@
 (defvar emacspeak-agent-shell-tool-output-verbosity)
 (defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
+(defvar agent-shell-mode-map)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar agent-shell-viewport-view-mode-hook)
 
@@ -1510,6 +1511,44 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (emacspeak-agent-shell-test--table-entry
        (nth 0 case) (nth 1 case) (nth 2 case))
       (list (nth 3 case) (nth 4 case))))))
+
+(ert-deftest emacspeak-agent-shell-prompt-letters-do-not-discover-tables ()
+  "Typing n or p at the live prompt should insert without moving focus."
+  (dolist (key '("n" "p"))
+    (let ((buffer (generate-new-buffer " *agent-shell-prompt-table-test*")))
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buffer)
+            (insert "before\n| A |\n|---|\n| 1 |\nafter\n\nCodex> ")
+            (agent-shell-markdown-replace-markup)
+            (setq major-mode 'agent-shell-mode)
+            (use-local-map agent-shell-mode-map)
+            (goto-char (point-max))
+            (let ((origin (point))
+                  events)
+              (cl-letf
+                  (((symbol-function 'shell-maker-busy) (lambda () nil))
+                   ((symbol-function 'shell-maker-point-at-last-prompt-p)
+                    (lambda () t)))
+                (setq events
+                      (emacspeak-agent-shell-test--capture-events
+                        (execute-kbd-macro (kbd key)))))
+              (should (= (point) (point-max) (1+ origin)))
+              (should (string-suffix-p (concat "Codex> " key)
+                                       (buffer-string)))
+              (should-not
+               (get-text-property
+                (point) 'agent-shell-markdown-table-source))
+              (should-not
+               (seq-some
+                (lambda (event)
+                  (and (eq (car event) 'speak)
+                       (string-match-p
+                        "Table"
+                        (substring-no-properties (cadr event)))))
+                events))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest emacspeak-agent-shell-table-discovery-selects-nearest-visible ()
   "Discovery should visit multiple tables in order and ignore hidden tables."

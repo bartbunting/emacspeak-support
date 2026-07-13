@@ -70,6 +70,8 @@ agent-shell Markdown table:
 navigation stop, including multiple tables in the same response.  Moving
 forward from the final cell or backward from the first cell leaves the table
 and speaks the adjacent content instead of reporting that no cells remain.
+At the live shell prompt, agent-shell's plain `n` and `p` bindings retain their
+self-insertion behavior and do not trigger table discovery or move focus.
 
 ### Speech Levels
 
