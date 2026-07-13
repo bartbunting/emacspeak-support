@@ -1986,12 +1986,29 @@ Return speech events plus the target character.  DIRECTION is `forward' or
 
 (ert-deftest emacspeak-agent-shell-unknown-block-uses-fallback ()
   "Unknown non-empty content should reach the fallback speaker."
-  :expected-result :failed
   (should
    (equal
     (emacspeak-agent-shell-test--speak-pending
      '(("request-mystery" . "Unrecognized but useful content")))
     '((speak "Unrecognized but useful content")))))
+
+(ert-deftest emacspeak-agent-shell-unknown-block-respects-speech-level ()
+  "Unknown content should be discoverable without adding background chatter."
+  (with-temp-buffer
+    (setq-local emacspeak-agent-shell-speech-level 'response)
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (emacspeak-agent-shell--speak-content "Useful content" 'unknown))
+      '((speak "Additional agent content available."))))
+    (setq-local emacspeak-agent-shell-speech-level 'notify)
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (emacspeak-agent-shell--speak-content "Useful content" 'unknown)))
+    (setq-local emacspeak-agent-shell-speech-level 'quiet)
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (emacspeak-agent-shell--speak-content "Useful content" 'unknown)))))
 
 (ert-deftest emacspeak-agent-shell-advice-targets-exist ()
   "Every configured advice target should exist in current agent-shell."

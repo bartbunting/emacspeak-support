@@ -766,7 +766,7 @@ This is called after streaming has completed."
 (defun emacspeak-agent-shell--classify-block (block-id)
   "Classify BLOCK-ID to determine content type.
 Returns one of: \\='agent-message, \\='user-message, \\='thought, 
-\\='tool-call, \\='permission, \\='plan, \\='error, or nil."
+\\='tool-call, \\='permission, \\='plan, \\='error, or \\='unknown."
   (cond
    ((string-match-p "agent_message_chunk" block-id) 'agent-message)
    ((string-match-p "user_message_chunk" block-id) 'user-message)
@@ -776,7 +776,7 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
    ((string-match-p "^failed-\\|^Error" block-id) 'error)
    ((and (not (string-match-p "-chunk\\|^permission-\\|^plan\\|^Error\\|^failed-" block-id))
          (> (length block-id) 10)) 'tool-call)
-   (t nil)))
+   (t 'unknown)))
 
 (defun emacspeak-agent-shell--speak-content (content block-type)
   "Speak CONTENT based on BLOCK-TYPE with appropriate feedback."
@@ -824,6 +824,12 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
       ('error
        (emacspeak-agent-shell--deliver-announcement
         'warn-user trimmed-content))
+      ('unknown
+       (cond
+        ((emacspeak-agent-shell--speech-level-at-least-p 'full)
+         (dtk-speak trimmed-content))
+        ((emacspeak-agent-shell--speech-level-at-least-p 'response)
+         (dtk-speak "Additional agent content available."))))
       (_
        ;; Fallback: speak if content is substantial
        (when (and (> (length trimmed-content) 0)
