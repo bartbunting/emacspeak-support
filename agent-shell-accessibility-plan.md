@@ -71,6 +71,23 @@ navigation stop, including multiple tables in the same response.  Moving
 forward from the final cell or backward from the first cell leaves the table
 and speaks the adjacent content instead of reporting that no cells remain.
 
+### Speech Levels
+
+Automatic speech follows the selected session by default.  Focused sessions
+use `emacspeak-agent-shell-foreground-speech-level`; other sessions use
+`emacspeak-agent-shell-background-speech-level`.  The levels are:
+
+- `full` for configured response, thought, tool, and lifecycle feedback;
+- `response` for agent responses and turn completion;
+- `notify` for turn completion only; and
+- `quiet` for no routine feedback.
+
+Permissions and errors remain audible at every routine level.  Background
+announcements use the notification stream and include the session name.
+`C-c C-q` cycles a session toward less speech and cancels queued content when
+it reaches `notify` or `quiet`.  `C-u C-c C-q` restores automatic focus-aware
+behavior.  The same command controls the backing shell from viewport mode.
+
 ## Findings
 
 ### Highest-Priority Defects

@@ -27,6 +27,7 @@
 (defvar emacspeak-agent-shell--table-navigation-active)
 (defvar emacspeak-agent-shell--table-navigation-map)
 (defvar emacspeak-agent-shell--table-navigation-table-start)
+(defvar emacspeak-agent-shell--speech-control-active)
 (defvar emacspeak-agent-shell-processing-end-icon)
 (defvar emacspeak-agent-shell-processing-start-icon)
 (defvar emacspeak-agent-shell-signal-processing)
@@ -35,6 +36,7 @@
 (defvar emacspeak-agent-shell-table-data-position)
 (defvar emacspeak-agent-shell-table-titles)
 (defvar emacspeak-agent-shell-tool-output-verbosity)
+(defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar agent-shell-viewport-view-mode-hook)
@@ -69,6 +71,8 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--session-focused-p
                   "emacspeak-agent-shell" (&optional buffer))
+(declare-function emacspeak-agent-shell-cycle-speech-level
+                  "emacspeak-agent-shell" (&optional reset))
 (declare-function emacspeak-agent-shell--speak-content
                   "emacspeak-agent-shell" (content block-type))
 (declare-function emacspeak-agent-shell--tool-call-block-handled-p
@@ -724,6 +728,116 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (dolist (buffer (list shell viewport other))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest emacspeak-agent-shell-speech-level-cycle-is-session-local ()
+  "Cycling should reduce speech, cancel queued content, and reset to auto."
+  (let ((buffer (generate-new-buffer "Codex Agent @ cycle-test"))
+        timer)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local emacspeak-agent-shell-speech-level 'auto)
+          (setq-local emacspeak-agent-shell--pending-bodies
+                      (make-hash-table :test #'equal))
+          (puthash "1-agent_message_chunk" "Pending response"
+                   emacspeak-agent-shell--pending-bodies)
+          (setq timer (run-with-timer 3600 nil #'ignore))
+          (setq-local emacspeak-agent-shell--pending-speech-timer timer
+                      emacspeak-agent-shell--pending-speech-qualified-ids
+                      '("1-agent_message_chunk"))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (let ((emacspeak-agent-shell-foreground-speech-level 'response)
+                    (emacspeak-agent-shell-background-speech-level 'notify))
+                (call-interactively
+                 #'emacspeak-agent-shell-cycle-speech-level)))
+            '((icon select-object)
+              (speak
+               "Agent speech notify for Codex Agent @ cycle-test."))))
+          (should (eq emacspeak-agent-shell-speech-level 'notify))
+          (should-not emacspeak-agent-shell--pending-speech-timer)
+          (should-not emacspeak-agent-shell--pending-speech-qualified-ids)
+          (should (= 0 (hash-table-count
+                        emacspeak-agent-shell--pending-bodies)))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (call-interactively
+               #'emacspeak-agent-shell-cycle-speech-level))
+            '((icon off)
+              (speak "Agent speech quiet for Codex Agent @ cycle-test."))))
+          (should (eq emacspeak-agent-shell-speech-level 'quiet))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (call-interactively
+               #'emacspeak-agent-shell-cycle-speech-level))
+            '((icon select-object)
+              (speak "Agent speech full for Codex Agent @ cycle-test."))))
+          (should (eq emacspeak-agent-shell-speech-level 'full))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (let ((emacspeak-agent-shell-foreground-speech-level 'response)
+                    (emacspeak-agent-shell-background-speech-level 'notify))
+                (emacspeak-agent-shell-cycle-speech-level t)))
+            '((icon select-object)
+              (speak "Agent speech automatic: response when focused, notify in background."))))
+          (should (eq emacspeak-agent-shell-speech-level 'auto)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-speech-level-control-works-in-viewport ()
+  "The viewport key should change the associated shell's speech override."
+  (let ((shell (generate-new-buffer "Codex Agent @ viewport-level"))
+        (viewport
+         (generate-new-buffer "Codex Agent @ viewport-level [viewport]")))
+    (unwind-protect
+        (progn
+          (with-current-buffer shell
+            (setq major-mode 'agent-shell-mode)
+            (setq-local emacspeak-agent-shell-speech-level 'auto))
+          (with-current-buffer viewport
+            (setq major-mode 'agent-shell-viewport-view-mode)
+            (emacspeak-agent-shell--table-navigation-setup)
+            (should emacspeak-agent-shell--speech-control-active)
+            (should
+             (eq (key-binding (kbd "C-c C-q"))
+                 #'emacspeak-agent-shell-cycle-speech-level))
+            (setq emacspeak-agent-shell--table-navigation-active t)
+            (should
+             (eq (key-binding (kbd "C-c C-q"))
+                 #'emacspeak-agent-shell-cycle-speech-level))
+            (should
+             (equal
+              (emacspeak-agent-shell-test--capture-events
+                (let ((emacspeak-agent-shell-foreground-speech-level
+                       'response))
+                  (call-interactively
+                   #'emacspeak-agent-shell-cycle-speech-level)))
+              '((icon select-object)
+                (speak
+                 "Agent speech notify for Codex Agent @ viewport-level."))))
+            (emacspeak-agent-shell--table-navigation-cleanup)
+            (should-not emacspeak-agent-shell--speech-control-active))
+          (with-current-buffer shell
+            (should (eq emacspeak-agent-shell-speech-level 'notify))))
+      (dolist (buffer (list shell viewport))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest emacspeak-agent-shell-session-override-beats-focus-default ()
+  "A concrete per-session level should apply in foreground or background."
+  (with-temp-buffer
+    (setq-local emacspeak-agent-shell-speech-level 'full)
+    (let ((emacspeak-agent-shell-background-speech-level 'quiet))
+      (cl-letf (((symbol-function
+                  'emacspeak-agent-shell--session-focused-p)
+                 (lambda (&optional _buffer) nil)))
+        (should (eq (emacspeak-agent-shell--effective-speech-level) 'full))))))
 
 (ert-deftest emacspeak-agent-shell-response-level-reduces-focused-chatter ()
   "The default focused level should retain responses and completion only."

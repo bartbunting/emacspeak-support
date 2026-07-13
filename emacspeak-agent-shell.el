@@ -136,6 +136,12 @@ Emacspeak's notification stream and includes the session buffer name."
                  (const :tag "Quiet" quiet))
   :group 'emacspeak-agent-shell)
 
+(defvar-local emacspeak-agent-shell-speech-level 'auto
+  "Per-session override for automatic agent-shell speech.
+The value `auto' follows the foreground and background defaults.  The values
+`full', `response', `notify', and `quiet' force that level for this session.
+Use `emacspeak-agent-shell-cycle-speech-level' to change it interactively.")
+
 (defcustom emacspeak-agent-shell-processing-start-icon 'progress
   "Auditory icon played when the model starts processing a prompt."
   :type 'symbol
@@ -271,6 +277,9 @@ Populated as streaming chunks arrive; consumed when the speech timer fires.")
 (defvar-local emacspeak-agent-shell--table-navigation-origin nil
   "Point before the command most recently tracked for table entry.")
 
+(defvar-local emacspeak-agent-shell--speech-control-active nil
+  "Non-nil when agent-shell speech-level keys are active.")
+
 (defcustom emacspeak-agent-shell-speech-delay 0.5
   "Delay in seconds before speaking completed streaming content.
 When agent output streams in chunks, wait this long after the last
@@ -312,9 +321,14 @@ A selected viewport counts as focus for its associated shell buffer."
 
 (defun emacspeak-agent-shell--effective-speech-level (&optional buffer)
   "Return the automatic speech level currently effective for BUFFER."
-  (if (emacspeak-agent-shell--session-focused-p buffer)
-      emacspeak-agent-shell-foreground-speech-level
-    emacspeak-agent-shell-background-speech-level))
+  (let ((target (or buffer (current-buffer))))
+    (with-current-buffer target
+      (if (memq emacspeak-agent-shell-speech-level
+                '(full response notify quiet))
+          emacspeak-agent-shell-speech-level
+        (if (emacspeak-agent-shell--session-focused-p target)
+            emacspeak-agent-shell-foreground-speech-level
+          emacspeak-agent-shell-background-speech-level)))))
 
 (defun emacspeak-agent-shell--speech-level-at-least-p (level &optional buffer)
   "Return non-nil when BUFFER's effective speech level includes LEVEL."
@@ -334,6 +348,69 @@ A selected viewport counts as focus for its associated shell buffer."
      (format "%s. %s"
              (emacspeak-agent-shell--session-label)
              text))))
+
+(defconst emacspeak-agent-shell--speech-level-cycle
+  '(full response notify quiet)
+  "Order used by `emacspeak-agent-shell-cycle-speech-level'.")
+
+(defun emacspeak-agent-shell--session-buffer (&optional buffer)
+  "Return the agent-shell session associated with BUFFER.
+Signal a user error when BUFFER is neither a shell nor an associated viewport."
+  (let ((candidate (or buffer (current-buffer))))
+    (with-current-buffer candidate
+      (cond
+       ((derived-mode-p 'agent-shell-mode) candidate)
+       ((derived-mode-p 'agent-shell-viewport-view-mode
+                        'agent-shell-viewport-edit-mode)
+        (or (and (fboundp 'agent-shell-viewport--shell-buffer)
+                 (agent-shell-viewport--shell-buffer candidate))
+            (user-error "This viewport has no agent-shell session")))
+       (t (user-error "Not in an agent-shell session"))))))
+
+(defun emacspeak-agent-shell--next-speech-level (level)
+  "Return the speech level following LEVEL in the interactive cycle."
+  (or (cadr (memq level emacspeak-agent-shell--speech-level-cycle))
+      (car emacspeak-agent-shell--speech-level-cycle)))
+
+(defun emacspeak-agent-shell-cycle-speech-level (&optional reset)
+  "Cycle automatic speech for the current agent-shell session.
+Cycle from the effective level toward less speech: full, response, notify,
+quiet, then full again.  With prefix argument RESET, restore `auto' so focus
+selects the configured foreground or background level."
+  (interactive "P")
+  (let* ((shell-buffer (emacspeak-agent-shell--session-buffer))
+         (label (emacspeak-agent-shell--session-label shell-buffer))
+         level announcement)
+    (with-current-buffer shell-buffer
+      (setq level
+            (if reset
+                'auto
+              (emacspeak-agent-shell--next-speech-level
+               (emacspeak-agent-shell--effective-speech-level shell-buffer))))
+      (setq-local emacspeak-agent-shell-speech-level level)
+      (when (memq level '(notify quiet))
+        (emacspeak-agent-shell--cancel-pending-speech))
+      (setq announcement
+            (if (eq level 'auto)
+                (format "Agent speech automatic: %s when focused, %s in background."
+                        emacspeak-agent-shell-foreground-speech-level
+                        emacspeak-agent-shell-background-speech-level)
+              (format "Agent speech %s for %s." level label))))
+    (emacspeak-icon (if (eq level 'quiet) 'off 'select-object))
+    (dtk-speak announcement)))
+
+(defvar emacspeak-agent-shell--speech-control-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-q")
+                #'emacspeak-agent-shell-cycle-speech-level)
+    map)
+  "Keymap for agent-shell speech-level controls.")
+
+(unless (assq 'emacspeak-agent-shell--speech-control-active
+              minor-mode-map-alist)
+  (push (cons 'emacspeak-agent-shell--speech-control-active
+              emacspeak-agent-shell--speech-control-map)
+        minor-mode-map-alist))
 
 (defun emacspeak-agent-shell--should-speak-p (buffer)
   "Determine if content should be spoken for BUFFER."
@@ -1296,6 +1373,7 @@ Return nil when that logical cell does not exist."
 
 (defun emacspeak-agent-shell--table-navigation-setup ()
   "Install contextual Markdown table navigation in the current buffer."
+  (setq emacspeak-agent-shell--speech-control-active t)
   (add-hook 'pre-command-hook
             #'emacspeak-agent-shell--table-navigation-pre-command nil t)
   (add-hook 'post-command-hook
@@ -1312,7 +1390,8 @@ Return nil when that logical cell does not exist."
 
 (defun emacspeak-agent-shell--table-navigation-cleanup ()
   "Remove contextual Markdown table navigation from the current buffer."
-  (setq emacspeak-agent-shell--table-navigation-active nil
+  (setq emacspeak-agent-shell--speech-control-active nil
+        emacspeak-agent-shell--table-navigation-active nil
         emacspeak-agent-shell--table-navigation-table-start nil
         emacspeak-agent-shell--table-navigation-origin nil)
   (remove-hook 'pre-command-hook
