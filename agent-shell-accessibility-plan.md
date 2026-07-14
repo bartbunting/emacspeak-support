@@ -51,7 +51,9 @@ Completed so far:
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
-  expansion, and temporary repeat keys in shell and viewport buffers;
+  expansion, temporary repeat keys in shell and viewport buffers, and
+  directional property search that does not rebuild or copy the complete
+  transcript on every move;
 - semantic fenced source-block navigation in shell and viewport buffers, with
   concise language and line-count arrival speech, contextual bracket
   inference, explicit full reading, and copying through agent-shell's public
@@ -86,6 +88,15 @@ Rendered tables and fenced source blocks are also selectable.  Tables retain
 the less chatty table-entry announcement: dimensions and the entry cell rather
 than every cell.  Source-block arrival reports only the language and line
 count; reading all of the code remains explicit.
+
+Navigation searches agent-shell's semantic text-property runs from point and
+constructs only the destination block.  It does not cache copied response
+bodies, so streaming edits cannot leave a stale navigation index.  Contextual
+navigation classifies the local fragment, prompt, table, or source panel
+without enumerating the transcript.  A synthetic 30,000-line, 300-response
+check reduced 20 response moves from about 0.35 seconds to about 0.004 seconds
+with speech calls disabled; the deterministic suite also prevents the command
+path from regressing to the whole-buffer collectors.
 
 When no repeat map is active, bare `]` and `[` infer the innermost semantic
 block at point, then move to the next or previous block of that type.  A table

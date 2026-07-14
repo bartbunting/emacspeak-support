@@ -2038,6 +2038,71 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (icon large-movement)
         (speak "First answer\nwith a second line"))))))
 
+(ert-deftest emacspeak-agent-shell-block-navigation-is-directional ()
+  "Navigation should not rebuild all semantic locations for each move."
+  (emacspeak-agent-shell-test--with-semantic-blocks
+    (goto-char (point-min))
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (cl-letf
+            (((symbol-function 'emacspeak-agent-shell--block-locations)
+              (lambda ()
+                (ert-fail "Navigation enumerated the whole transcript")))
+             ((symbol-function 'emacspeak-agent-shell--fragment-locations)
+              (lambda ()
+                (ert-fail "Navigation enumerated every fragment"))))
+          (emacspeak-agent-shell--jump-block-of-type
+           'agent-response 'forward)
+          (emacspeak-agent-shell--jump-block-of-type
+           'agent-response 'forward)))
+      '((stop nil)
+        (icon large-movement)
+        (speak "First answer\nwith a second line")
+        (stop nil)
+        (icon large-movement)
+        (speak "Second answer"))))
+    (goto-char (point-min))
+    (search-forward "second line")
+    (backward-char 3)
+    (cl-letf
+        (((symbol-function 'emacspeak-agent-shell--block-locations)
+          (lambda ()
+            (ert-fail "Context lookup enumerated the whole transcript"))))
+      (should
+       (eq
+        (plist-get (emacspeak-agent-shell--block-location-at-point) :type)
+        'agent-response)))))
+
+(ert-deftest emacspeak-agent-shell-block-navigation-keeps-adjacent-fragments ()
+  "Directional search should not skip adjacent matching property runs."
+  (with-temp-buffer
+    (let ((first-start (point)))
+      (insert "first")
+      (add-text-properties
+       first-start (point)
+       '(agent-shell-ui-state
+         ((:qualified-id . "1-agent_message_chunk"))
+         agent-shell-ui-section body)))
+    (let ((second-start (point)))
+      (insert "second")
+      (add-text-properties
+       second-start (point)
+       '(agent-shell-ui-state
+         ((:qualified-id . "2-agent_message_chunk"))
+         agent-shell-ui-section body))
+      (setq major-mode 'agent-shell-mode)
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'agent-response 'forward))
+        '((stop nil)
+          (icon large-movement)
+          (speak "second"))))
+      (should (= (point) second-start)))))
+
 (ert-deftest emacspeak-agent-shell-block-navigation-selects-and-repeats ()
   "Interactive navigation should remember completion and enable repeat keys."
   (let ((emacspeak-agent-shell--block-navigation-type 'agent-response)
@@ -2279,13 +2344,13 @@ Return speech events plus the target character.  DIRECTION is `forward' or
        (equal
         (emacspeak-agent-shell-test--capture-events
           (cl-letf
-              (((symbol-function 'emacspeak-agent-shell--fragment-locations)
-                (lambda ()
-                  (list
-                   (list :position (point-min)
-                         :state
-                         '((:qualified-id . "group-1")
-                           (:collapsed . t))))))
+              (((symbol-function
+                 'emacspeak-agent-shell--fragment-location-by-id)
+                (lambda (&rest _)
+                  (list :position (point-min)
+                        :state
+                        '((:qualified-id . "group-1")
+                          (:collapsed . t)))))
                ((symbol-function 'agent-shell-ui-toggle-fragment)
                 (lambda ()
                   (setq toggled t)

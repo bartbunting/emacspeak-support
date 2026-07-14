@@ -1552,6 +1552,55 @@ keep that compatibility inference isolated here."
         (setq position next)))
     (nreverse locations)))
 
+(defun emacspeak-agent-shell--property-range-at-position
+    (property position)
+  "Return PROPERTY's complete non-nil range containing POSITION."
+  (when (and (< position (point-max))
+             (get-text-property position property))
+    (cons
+     (or (previous-single-property-change
+          (min (1+ position) (point-max))
+          property nil (point-min))
+         (point-min))
+     (or (next-single-property-change
+          position property nil (point-max))
+         (point-max)))))
+
+(defun emacspeak-agent-shell--fragment-location-at-position
+    (position &optional metadata-only)
+  "Return the agent-shell UI fragment containing POSITION.
+When METADATA-ONLY is non-nil, do not copy its labels or body."
+  (when-let* ((state
+               (and (< position (point-max))
+                    (get-text-property position 'agent-shell-ui-state)))
+              (range
+               (emacspeak-agent-shell--property-range-at-position
+                'agent-shell-ui-state position)))
+    (if metadata-only
+        (list :position (car range)
+              :end (cdr range)
+              :type
+              (emacspeak-agent-shell--semantic-block-type
+               (map-elt state :qualified-id) state)
+              :state state)
+      (emacspeak-agent-shell--fragment-location
+       (car range) (cdr range) state))))
+
+(defun emacspeak-agent-shell--table-location-at-position (position)
+  "Return the rendered Markdown table containing POSITION."
+  (when-let* ((range
+               (emacspeak-agent-shell--property-range-at-position
+                'agent-shell-markdown-table-source position))
+              (cell
+               (text-property-any
+                (car range) (cdr range)
+                'agent-shell-markdown-table-cell-start t)))
+    (list :position cell
+          :start (car range)
+          :end (cdr range)
+          :type 'table
+          :state (get-text-property cell 'agent-shell-ui-state))))
+
 (defun emacspeak-agent-shell--source-block-language (source)
   "Return the fenced code language recorded in Markdown SOURCE."
   (when (and (stringp source)
@@ -1632,6 +1681,64 @@ keep that compatibility inference isolated here."
         (setq position next)))
     (nreverse locations)))
 
+(defun emacspeak-agent-shell--source-block-location-at-body (position)
+  "Return the rendered source-block location whose body contains POSITION."
+  (when-let* ((range
+               (emacspeak-agent-shell--property-range-at-position
+                'agent-shell-markdown-source-block-body position))
+              (body-start (car range))
+              (body-end (cdr range))
+              (source
+               (get-text-property
+                body-start 'agent-shell-markdown-source))
+              (body
+               (agent-shell-markdown-source-block-at-point body-start)))
+    (list
+     :position body-start
+     :start (emacspeak-agent-shell--source-block-panel-start body-start)
+     :end (emacspeak-agent-shell--source-block-panel-end body-end)
+     :type 'source-block
+     :state (get-text-property body-start 'agent-shell-ui-state)
+     :language (emacspeak-agent-shell--source-block-language source)
+     :line-count (emacspeak-agent-shell--source-block-line-count body)
+     :body body)))
+
+(defun emacspeak-agent-shell--markdown-panel-range-at-position (position)
+  "Return the contiguous rendered Markdown panel containing POSITION."
+  (when (and (< position (point-max))
+             (stringp
+              (get-text-property position 'agent-shell-markdown-source)))
+    (let ((start position)
+          (end position))
+      (while (and (> start (point-min))
+                  (stringp
+                   (get-text-property
+                    (1- start) 'agent-shell-markdown-source)))
+        (setq start
+              (or (previous-single-property-change
+                   start 'agent-shell-markdown-source nil (point-min))
+                  (point-min))))
+      (while (and (< end (point-max))
+                  (stringp
+                   (get-text-property
+                    end 'agent-shell-markdown-source)))
+        (setq end
+              (or (next-single-property-change
+                   end 'agent-shell-markdown-source nil (point-max))
+                  (point-max))))
+      (cons start end))))
+
+(defun emacspeak-agent-shell--source-block-location-at-position (position)
+  "Return the rendered source block whose panel contains POSITION."
+  (when-let* ((panel
+               (emacspeak-agent-shell--markdown-panel-range-at-position
+                position))
+              (body
+               (text-property-any
+                (car panel) (cdr panel)
+                'agent-shell-markdown-source-block-body t)))
+    (emacspeak-agent-shell--source-block-location-at-body body)))
+
 (defun emacspeak-agent-shell--deduplicate-block-locations (locations)
   "Return LOCATIONS without duplicate type/position pairs."
   (let (seen result)
@@ -1677,18 +1784,284 @@ keep that compatibility inference isolated here."
             (< (plist-get left :position)
                (plist-get right :position))))))
 
+(defun emacspeak-agent-shell--fragment-location-in-direction
+    (type direction origin)
+  "Return the nearest UI fragment of TYPE from ORIGIN in DIRECTION."
+  (save-excursion
+    (goto-char origin)
+    (let ((current
+           (emacspeak-agent-shell--fragment-location-at-position
+            origin t)))
+      (if (and (eq direction 'backward)
+               current
+               (eq (plist-get current :type) type)
+               (< (plist-get current :position) origin))
+          (emacspeak-agent-shell--fragment-location-at-position
+           (plist-get current :position))
+        ;; Begin outside the current property run.  Starting a property
+        ;; search inside a run can return only its remaining substring, and
+        ;; `not-current' can skip an immediately adjacent matching run.
+        (when current
+          (goto-char
+           (if (eq direction 'forward)
+               (plist-get current :end)
+             (plist-get current :position))))
+        (when-let* ((match
+                     (funcall
+                      (if (eq direction 'forward)
+                          #'text-property-search-forward
+                        #'text-property-search-backward)
+                      'agent-shell-ui-state nil
+                      (lambda (_value state)
+                        (eq
+                         (emacspeak-agent-shell--semantic-block-type
+                          (map-elt state :qualified-id) state)
+                         type)))))
+          (emacspeak-agent-shell--fragment-location
+           (prop-match-beginning match)
+           (prop-match-end match)
+           (prop-match-value match)))))))
+
+(defun emacspeak-agent-shell--property-location-in-direction
+    (property location-function direction origin &optional end-boundary)
+  "Find PROPERTY from ORIGIN and convert it with LOCATION-FUNCTION.
+Search in DIRECTION.  Forward locations must begin after ORIGIN.  Backward
+locations must begin before ORIGIN, or end no later than ORIGIN when
+END-BOUNDARY is non-nil."
+  (save-excursion
+    (goto-char origin)
+    (let (location match)
+      (while
+          (and
+           (not location)
+           (setq match
+                 (funcall
+                  (if (eq direction 'forward)
+                      #'text-property-search-forward
+                    #'text-property-search-backward)
+                  property nil (lambda (_value value) value))))
+        (let ((candidate
+               (funcall location-function
+                        (prop-match-beginning match))))
+          (when
+              (and candidate
+                   (if (eq direction 'forward)
+                       (> (plist-get candidate :position) origin)
+                     (if end-boundary
+                         (<= (plist-get candidate :end) origin)
+                       (< (plist-get candidate :position) origin))))
+            (setq location candidate))))
+      location)))
+
+(defun emacspeak-agent-shell--prompt-location-from-match (property match)
+  "Return a user-prompt location for PROPERTY search MATCH."
+  (when-let* ((range
+               (emacspeak-agent-shell--property-range-at-position
+                property (prop-match-beginning match)))
+              (start (car range))
+              (end
+               (if (eq property 'agent-shell-viewport-prompt)
+                   (cdr range)
+                 (or (text-property-any
+                      (cdr range) (point-max) 'shell-maker--marker t)
+                     (point-max)))))
+    (list :position start
+          :end end
+          :type 'user-prompt
+          :body
+          (emacspeak-agent-shell--visible-block-text start end))))
+
+(defun emacspeak-agent-shell--prompt-property-location-in-direction
+    (property direction origin)
+  "Return the nearest prompt marked by PROPERTY from ORIGIN in DIRECTION."
+  (save-excursion
+    (goto-char origin)
+    (let (location match)
+      (while
+          (and
+           (not location)
+           (setq match
+                 (funcall
+                  (if (eq direction 'forward)
+                      #'text-property-search-forward
+                    #'text-property-search-backward)
+                  property nil
+                  (if (eq property 'agent-shell-viewport-prompt)
+                      (lambda (_value value) value)
+                    (lambda (_value value)
+                      (emacspeak-agent-shell--face-includes-p
+                       value 'agent-shell-prompt))))))
+        (let ((candidate
+               (emacspeak-agent-shell--prompt-location-from-match
+                property match)))
+          (when
+              (and candidate
+                   (if (eq direction 'forward)
+                       (> (plist-get candidate :position) origin)
+                     (< (plist-get candidate :position) origin)))
+            (setq location candidate))))
+      location)))
+
+(defun emacspeak-agent-shell--nearest-location (locations direction)
+  "Return the nearest of LOCATIONS in DIRECTION."
+  (car
+   (sort
+    (delq nil locations)
+    (if (eq direction 'forward)
+        (lambda (left right)
+          (< (plist-get left :position)
+             (plist-get right :position)))
+      (lambda (left right)
+        (> (plist-get left :position)
+           (plist-get right :position)))))))
+
+(defun emacspeak-agent-shell--prompt-location-in-direction
+    (direction origin)
+  "Return the nearest rendered user prompt from ORIGIN in DIRECTION."
+  (emacspeak-agent-shell--nearest-location
+   (mapcar
+    (lambda (property)
+      (emacspeak-agent-shell--prompt-property-location-in-direction
+       property direction origin))
+    '(agent-shell-viewport-prompt font-lock-face face))
+   direction))
+
+(defun emacspeak-agent-shell--fragment-type-exists-p (type)
+  "Return non-nil when the buffer contains a UI fragment of TYPE."
+  (save-excursion
+    (goto-char (point-min))
+    (text-property-search-forward
+     'agent-shell-ui-state nil
+     (lambda (_value state)
+       (eq
+        (emacspeak-agent-shell--semantic-block-type
+         (map-elt state :qualified-id) state)
+        type)))))
+
+(defun emacspeak-agent-shell--viewport-response-location ()
+  "Return the plain restored-viewport response fallback, if present."
+  (when (and (derived-mode-p 'agent-shell-viewport-view-mode)
+             (not
+              (emacspeak-agent-shell--fragment-type-exists-p
+               'agent-response)))
+    (when-let* ((prompt
+                 (emacspeak-agent-shell--prompt-location-in-direction
+                  'backward (point-max)))
+                (start (plist-get prompt :end))
+                (response
+                 (save-excursion
+                   (goto-char start)
+                   (skip-chars-forward " \t\n\r")
+                   (and (< (point) (point-max)) (point)))))
+      (list :position response
+            :end (point-max)
+            :type 'agent-response
+            :body
+            (emacspeak-agent-shell--visible-block-text
+             response (point-max))))))
+
+(defun emacspeak-agent-shell--block-location-in-direction
+    (type direction origin)
+  "Return the nearest semantic TYPE from ORIGIN in DIRECTION."
+  (pcase type
+    ('table
+     (emacspeak-agent-shell--property-location-in-direction
+      'agent-shell-markdown-table-source
+      #'emacspeak-agent-shell--table-location-at-position
+      direction origin t))
+    ('source-block
+     (emacspeak-agent-shell--property-location-in-direction
+      'agent-shell-markdown-source-block-body
+      #'emacspeak-agent-shell--source-block-location-at-body
+      direction origin t))
+    ('user-prompt
+     (emacspeak-agent-shell--nearest-location
+      (list
+       (emacspeak-agent-shell--fragment-location-in-direction
+        type direction origin)
+       (emacspeak-agent-shell--prompt-location-in-direction
+        direction origin))
+      direction))
+    ('agent-response
+     (or
+      (emacspeak-agent-shell--fragment-location-in-direction
+       type direction origin)
+      (when-let* ((fallback
+                   (emacspeak-agent-shell--viewport-response-location))
+                  (position (plist-get fallback :position))
+                  ((if (eq direction 'forward)
+                       (> position origin)
+                     (< position origin))))
+        fallback)))
+    (_
+     (emacspeak-agent-shell--fragment-location-in-direction
+      type direction origin))))
+
+(defun emacspeak-agent-shell--prompt-location-at-position (position)
+  "Return the rendered user prompt containing POSITION."
+  (when (< position (point-max))
+    (when-let* ((candidate
+                 (emacspeak-agent-shell--prompt-location-in-direction
+                  'backward (min (point-max) (1+ position))))
+                (start (plist-get candidate :position))
+                (end (plist-get candidate :end))
+                ((<= start position))
+                ((< position end)))
+      candidate)))
+
+(defun emacspeak-agent-shell--innermost-block-location (locations)
+  "Return the innermost semantic block from LOCATIONS."
+  (car
+   (sort
+    (delq nil locations)
+    (lambda (left right)
+      (let ((left-size
+             (- (plist-get left :end)
+                (or (plist-get left :start)
+                    (plist-get left :position))))
+            (right-size
+             (- (plist-get right :end)
+                (or (plist-get right :start)
+                    (plist-get right :position)))))
+        (or (< left-size right-size)
+            (and (= left-size right-size)
+                 (memq (plist-get left :type) '(table source-block))
+                 (not
+                  (memq (plist-get right :type)
+                        '(table source-block))))))))))
+
+(defun emacspeak-agent-shell--fragment-location-by-id
+    (qualified-id origin)
+  "Return fragment QUALIFIED-ID nearest ORIGIN, preferring earlier content."
+  (save-excursion
+    (goto-char origin)
+    (let ((predicate
+           (lambda (_value state)
+             (equal (map-elt state :qualified-id) qualified-id))))
+      (when-let* ((match
+                   (or
+                    (text-property-search-backward
+                     'agent-shell-ui-state nil predicate)
+                    (progn
+                      (goto-char origin)
+                      (text-property-search-forward
+                       'agent-shell-ui-state nil predicate)))))
+        (list :position (prop-match-beginning match)
+              :end (prop-match-end match)
+              :type
+              (emacspeak-agent-shell--semantic-block-type
+               (map-elt (prop-match-value match) :qualified-id)
+               (prop-match-value match))
+              :state (prop-match-value match))))))
+
 (defun emacspeak-agent-shell--expand-block-parent (location)
   "Expand LOCATION's collapsed parent group when necessary."
   (when-let* ((state (plist-get location :state))
               (group-id (map-elt state :group-id))
               ((invisible-p (plist-get location :position)))
               (parent
-               (seq-find
-                (lambda (candidate)
-                  (equal
-                   (map-elt (plist-get candidate :state) :qualified-id)
-                   group-id))
-                (emacspeak-agent-shell--fragment-locations)))
+               (emacspeak-agent-shell--fragment-location-by-id
+                group-id (plist-get location :position)))
               (parent-state (plist-get parent :state))
               ((map-elt parent-state :collapsed)))
     (goto-char (plist-get parent :position))
@@ -1737,25 +2110,10 @@ Use ORIGIN instead of point as the navigation boundary when non-nil."
   (unless (derived-mode-p 'agent-shell-mode
                           'agent-shell-viewport-view-mode)
     (user-error "Not in an agent-shell transcript"))
-  (let* ((locations
-          (seq-filter
-           (lambda (location) (eq (plist-get location :type) type))
-           (emacspeak-agent-shell--block-locations)))
-         (origin (or origin (point)))
+  (let* ((origin (or origin (point)))
          (target
-          (if (eq direction 'forward)
-              (seq-find
-               (lambda (location)
-                 (> (plist-get location :position) origin))
-               locations)
-            (car
-             (last
-              (seq-take-while
-               (lambda (location)
-                 (if (memq type '(table source-block))
-                     (<= (plist-get location :end) origin)
-                   (< (plist-get location :position) origin)))
-               locations))))))
+          (emacspeak-agent-shell--block-location-in-direction
+           type direction origin)))
     (if target
         (progn
           (emacspeak-agent-shell--expand-block-parent target)
@@ -1785,30 +2143,18 @@ Use ORIGIN instead of point as the navigation boundary when non-nil."
   "Return the innermost semantic block containing POSITION or point.
 Rendered tables and source blocks win ties with enclosing transcript blocks."
   (setq position (or position (point)))
-  (car
-   (sort
-    (seq-filter
-     (lambda (location)
-       (let ((start (or (plist-get location :start)
-                        (plist-get location :position)))
-             (end (plist-get location :end)))
-         (and start end (<= start position) (< position end))))
-     (emacspeak-agent-shell--block-locations))
-    (lambda (left right)
-      (let ((left-size
-             (- (plist-get left :end)
-                (or (plist-get left :start)
-                    (plist-get left :position))))
-            (right-size
-             (- (plist-get right :end)
-                (or (plist-get right :start)
-                    (plist-get right :position)))))
-        (or (< left-size right-size)
-            (and (= left-size right-size)
-                 (memq (plist-get left :type) '(table source-block))
-                 (not
-                  (memq (plist-get right :type)
-                        '(table source-block))))))))))
+  (or
+   (emacspeak-agent-shell--innermost-block-location
+    (list
+     (emacspeak-agent-shell--table-location-at-position position)
+     (emacspeak-agent-shell--source-block-location-at-position position)
+     (emacspeak-agent-shell--fragment-location-at-position position t)
+     (emacspeak-agent-shell--prompt-location-at-position position)))
+   (when-let* ((fallback
+                (emacspeak-agent-shell--viewport-response-location))
+               ((<= (plist-get fallback :position) position))
+               ((< position (plist-get fallback :end))))
+     fallback)))
 
 (defun emacspeak-agent-shell--source-block-at-point ()
   "Return the semantic source block containing point, or signal an error."
