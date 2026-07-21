@@ -31,6 +31,7 @@
 ;;   M-x emacspeak-support-enable-which-key
 ;;   M-x emacspeak-support-enable-markdown
 ;;   M-x emacspeak-support-enable-helm
+;;   M-x emacspeak-support-enable-agent-shell
 ;;   M-x emacspeak-support-toggle-<extension>
 ;;   M-x emacspeak-support-enable-all
 ;;   M-x emacspeak-support-disable-all

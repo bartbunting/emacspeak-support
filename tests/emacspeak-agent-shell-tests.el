@@ -2,9 +2,9 @@
 
 ;;; Commentary:
 ;;
-;; Deterministic speech tests for emacspeak-agent-shell.  Known defects are
-;; encoded as expected failures so they remain visible without making the
-;; baseline test command fail.
+;; Deterministic speech tests for emacspeak-agent-shell.  The tests collect
+;; ordered speech, interruption, auditory-icon, notification, and message
+;; output without starting a live agent or speech server.
 
 ;;; Code:
 

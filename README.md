@@ -1,49 +1,31 @@
 # Emacspeak Support Extensions
 
-A collection of speech-enabled support extensions for modern Emacs packages that work with Emacspeak.
-
-Emacspeak is an audio desktop that provides complete eyes-free access to Emacs. This repository provides speech support for modern packages that are not yet in the Emacspeak mainline, making them more accessible and easier to use with speech feedback.
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Usage](#usage)
-- [Available Extensions](#available-extensions)
-- [Contributing](#contributing)
-- [Development Guide](#development-guide)
-- [License](#license)
+This repository provides independently loadable Emacspeak speech interfaces
+for packages that are not fully supported in Emacspeak itself.  The current
+extensions cover Corfu, Vertico, Which-Key, Markdown Mode, Helm, and
+agent-shell.
 
 ## Installation
 
-### Basic Installation
-
-1. Clone this repository:
+Clone the repository and add it to `load-path` after Emacspeak has been set up:
 
 ```bash
 git clone https://github.com/robertmeta/emacspeak-support.git
 ```
-
-2. Add to your Emacs configuration:
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacspeak-support")
 (require 'emacspeak-support)
 ```
 
-### Auto-loading Extensions
-
-To automatically enable all extensions when Emacspeak loads:
-
-```elisp
-(with-eval-after-load 'emacspeak-support
-  (emacspeak-support-enable-all))
-```
-
-Or selectively enable extensions when their corresponding packages load:
+Enable only the integrations you use:
 
 ```elisp
 (with-eval-after-load 'corfu
   (emacspeak-support-enable-corfu))
+
+(with-eval-after-load 'vertico
+  (emacspeak-support-enable-vertico))
 
 (with-eval-after-load 'which-key
   (emacspeak-support-enable-which-key))
@@ -53,138 +35,185 @@ Or selectively enable extensions when their corresponding packages load:
 
 (with-eval-after-load 'helm
   (emacspeak-support-enable-helm))
+
+(with-eval-after-load 'agent-shell
+  (emacspeak-support-enable-agent-shell))
 ```
 
-See `example-config.el` for a complete configuration example.
+`emacspeak-support-enable-all` is available when every corresponding target
+package is installed.  See [example-config.el](example-config.el) for a
+complete selective setup.
 
-## Usage
+## Managing Extensions
 
-### Enable/Disable Individual Extensions
+Each extension has interactive enable, disable, and toggle commands.  For
+example:
 
-Each extension can be toggled on or off independently:
-
-```elisp
-;; Enable specific extensions
-M-x emacspeak-support-enable-corfu
-M-x emacspeak-support-enable-which-key
-M-x emacspeak-support-enable-markdown
-M-x emacspeak-support-enable-helm
-
-;; Disable specific extensions
-M-x emacspeak-support-disable-corfu
-M-x emacspeak-support-disable-which-key
-M-x emacspeak-support-disable-markdown
-M-x emacspeak-support-disable-helm
-
-;; Toggle extensions on/off
-M-x emacspeak-support-toggle-corfu
-M-x emacspeak-support-toggle-which-key
-M-x emacspeak-support-toggle-markdown
-M-x emacspeak-support-toggle-helm
+```text
+M-x emacspeak-support-enable-agent-shell
+M-x emacspeak-support-disable-agent-shell
+M-x emacspeak-support-toggle-agent-shell
 ```
 
-### Enable/Disable All Extensions
-
-```elisp
-;; Enable all extensions at once
-M-x emacspeak-support-enable-all
-
-;; Disable all extensions
-M-x emacspeak-support-disable-all
-```
-
-### Check Extension Status
-
-```elisp
-;; Display which extensions are currently enabled
-M-x emacspeak-support-status
-```
-
-### Generic Interface
-
-You can also use the generic commands with completion:
-
-```elisp
-M-x emacspeak-support-enable    ;; prompts for extension name
-M-x emacspeak-support-disable   ;; prompts for extension name
-M-x emacspeak-support-toggle    ;; prompts for extension name
-```
+The same command suffixes are available for `corfu`, `vertico`, `which-key`,
+`markdown`, and `helm`.  The generic
+`emacspeak-support-enable`, `emacspeak-support-disable`, and
+`emacspeak-support-toggle` commands prompt for an extension.  Use
+`emacspeak-support-status` to report the enabled set, or
+`emacspeak-support-enable-all` and `emacspeak-support-disable-all` to change
+the complete set.
 
 ## Available Extensions
 
-### emacspeak-corfu
+### Corfu
 
-Speech-enables Corfu, a modern in-buffer completion interface.
+`emacspeak-corfu.el` speaks the selected completion candidate, its annotation,
+and its position in the candidate set.  It adds auditory feedback for
+navigation, insertion, and completion updates.
 
-**Features:**
+### Vertico
 
-- Speaks completion candidates with position info (e.g., "3 of 10: candidate-name")
-- Includes annotations when available
-- Provides auditory icons for navigation and selection
-- Real-time feedback during candidate filtering
+`emacspeak-vertico.el` announces candidate-count changes while filtering and
+speaks the selected candidate, annotation, and position during minibuffer
+navigation.  Selection and exit receive auditory confirmation.
 
-### emacspeak-which-key
+### Which-Key
 
-Speech-enables Which-Key, which displays available keybindings after prefix keys.
+`emacspeak-which-key.el` speaks the displayed key bindings and page
+information.  `emacspeak-which-key-speak` reads the current page and
+`emacspeak-which-key-toggle-auto-speak` controls automatic reading.
 
-**Features:**
+### Markdown Mode
 
-- Automatically speaks keybinding options when popup appears
-- Page navigation with auditory feedback
-- Toggle auto-speak with `emacspeak-which-key-toggle-auto-speak`
-- Manual speak command: `emacspeak-which-key-speak`
+`emacspeak-markdown.el` adds semantic voices and navigation feedback for
+headings, lists, links, tables, tasks, code, and other Markdown structures.
+Its optional reading mode removes most spoken markup while retaining voice
+contrast:
 
-### emacspeak-markdown
+- `C-c C-s h` speaks the current heading.
+- `C-c C-s r` toggles `emacspeak-markdown-reading-mode`.
+- `emacspeak-markdown-auto-reading-mode` enables reading mode automatically.
 
-Speech-enables markdown-mode for better navigation of markdown documents.
+### Helm
 
-**Features:**
+`emacspeak-helm.el` prevents Helm Help's prompt from being repeated during
+navigation and makes the Emacspeak prefix key work in the Helm Help event
+loop.  It is a standalone version of Parham Doustdar's December 2025
+Emacspeak mailing-list patch.
 
-- Speaks "heading level 3: Title" instead of "three pounds space Title"
-- Smart navigation between headers, links, and list items
-- Appropriate voice personalities for different markdown elements
-- Keybinding: `C-c C-s h` to speak current heading
+### Agent Shell
 
-### emacspeak-helm
+`emacspeak-agent-shell.el` provides semantic speech for agent-shell's
+asynchronous, multi-session interface.  It currently includes:
 
-Speech-enables Helm, a powerful incremental completion and selection framework.
+- response speech at the public turn-completion boundary, without treating a
+  network pause as completion;
+- distinct permission, lifecycle, error, and tool-status feedback;
+- focus-aware foreground and background speech levels;
+- a concise spoken graphical header on focus and full session-state speech
+  through Emacspeak's standard `C-e m` command;
+- voices for current agent-shell interface and rendered Markdown faces;
+- semantic status words for faced plan/status icons while leaving ordinary
+  ellipses unchanged;
+- typed transcript navigation for responses, prompts, thoughts, tools, plans,
+  permissions, errors, source blocks, and rendered tables;
+- fenced source-block reading and copying; and
+- two-dimensional Markdown table navigation, row/column reading, configurable
+  header speech, logical copying, and direct table exit.
 
-**Features:**
+Permissions and errors remain audible even when routine session speech is
+quiet.  Background completion uses Emacspeak's notification stream and names
+the session.
 
-- Fixes helm-help mode prompt repetition during navigation
-- Emacspeak prefix key (C-e) now works in helm help mode
-- Proper silence control via emacspeak-speak-messages
-- Complete standalone implementation (no core Emacspeak patches needed)
+#### Agent-shell Keys
 
-**Based on:** Patch by Parham Doustdar (Emacspeak mailing list, December 26, 2025)
+These keys are installed in agent-shell shell and viewport buffers:
 
+| Key | Action |
+| --- | --- |
+| `C-c C-q` | Select speech level for the current session |
+| `C-c C-S-q` | Select the default speech level for background sessions |
+| `C-c ]`, `C-c [` | Select a block type and move forward or backward |
+| `]`, `[` | Repeat typed navigation, infer the type at point, or open the selector |
+| `C-c C-b` | Speak the complete fenced source block at point |
+| `C-c C-y` | Copy the fenced source body without its delimiters |
+| `C-e m` | Speak the full semantic agent header and session state |
 
-### emacspeak-agent-shell
-Speech-enables Agent Shell, a powerful and versatile tool for connecting and communicating with agents that support ACP protocol.
+Bare brackets retain normal insertion at the live prompt and in a viewport
+compose buffer.  Block-type completion is case-insensitive; pressing the same
+bracket again with an empty selector accepts its default.
 
-**Features:**
+While point is in a rendered Markdown table:
 
-- Provides spoken feedback when the agents generate output.
-- Provides a toggle to turn automatic speech announcements on and off.
+| Key | Action |
+| --- | --- |
+| Arrow keys | Move by logical row or column |
+| `TAB`, `Shift-TAB` | Move sequentially through cells |
+| `r`, `c`, `SPC` | Speak the current row, column, or cell |
+| `.`, `=` | Speak cell context or table dimensions |
+| `k k`, `k r`, `k c` | Copy the logical cell, row, or column |
+| `w` | Copy the logical cell |
+| `a` | Change title inclusion and data/title order |
+| `M-Up`, `M-Down` | Leave before or after the table |
 
+The table defaults and status words can also be changed through
+`M-x customize-group RET emacspeak-agent-shell RET`.  The most relevant
+options are `emacspeak-agent-shell-table-titles`,
+`emacspeak-agent-shell-table-data-position`,
+`emacspeak-agent-shell-status-speech-labels`, the foreground/background
+speech levels, thought-process handling, and tool-output verbosity.
 
-## Contributing
+The detailed audit, implemented behavior, compatibility dependencies, and
+remaining work are recorded in
+[agent-shell-accessibility-plan.md](agent-shell-accessibility-plan.md).
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
+#### Reloading a Development Checkout
 
-- Why contribute here
-- What makes a good extension
-- Development patterns and code standards
-- Testing procedures
+Emacspeak may also contain a bundled file with the same feature name.  To test
+this checkout, load it by absolute path after `emacspeak-setup.el`, then enable
+it:
 
-## Requirements
+```elisp
+(load "/absolute/path/to/emacspeak-support/emacspeak-agent-shell.el")
+(emacspeak-agent-shell-enable)
+```
 
-- Emacs 31+
-- Emacspeak
-- Target packages (corfu, which-key, markdown-mode, helm, etc.) as needed
+Existing agent-shell and viewport buffers are updated; their sessions do not
+need to be restarted.  `emacspeak-agent-shell-speech-setup` is a mode setup
+function and is not an interactive command.  If the wrong copy appears to be
+loaded, evaluate:
+
+```elisp
+(symbol-file 'emacspeak-agent-shell-enable)
+```
+
+## Requirements and Compatibility
+
+- Emacspeak.  The currently inspected Emacspeak release requires Emacs 29.1
+  or later.
+- The target package for each enabled extension.
+- Current agent-shell declares Emacs 29.1, shell-maker 0.93.5, and ACP 0.13.1.
+
+The agent-shell integration is currently developed and replay-tested with
+Emacs 30.2.  Its exact audited revisions are recorded in the accessibility
+plan.  Compatibility-sensitive changes should also be checked against the
+oldest Emacs and target-package versions that the repository intends to
+support.
+
+## Testing and Contributing
+
+Run the deterministic agent-shell suite with:
+
+```bash
+emacs --batch -Q -l tests/run-tests.el
+```
+
+See [tests/README.md](tests/README.md) for paths and suite details,
+[AGENTS.md](AGENTS.md) for the layered speech-testing methodology, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for extension design and contribution
+guidance.
 
 ## License
 
-GNU General Public License v2.0 or later
-
-See the individual files for copyright and license information.
+GNU General Public License v2.0 or later.  See the individual files for
+copyright and license information.

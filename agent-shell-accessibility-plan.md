@@ -1,30 +1,31 @@
 # Agent Shell Accessibility Plan
 
-Status: in progress
+Status: core speech and navigation implemented; remaining polish in progress
 
 Audit date: 2026-07-13
 
 ## Scope and Audit Snapshot
 
 This plan covers `emacspeak-agent-shell.el` in this repository and its support
-for the current agent-shell interaction model.  The audit compared:
+for the current agent-shell interaction model.  The original audit compared:
 
 - emacspeak-support at `da2f902`;
 - agent-shell `v0.59.1-2-g5351f9b` (`5351f9b`), rechecked before semantic
   response completion;
 - Emacspeak `60.0-490-g7482f8e27`; and
-- Emacs 30.2 for static and replay checks.  Final compatibility checks must
-  also use the repository's documented minimum of Emacs 31.
+- Emacs 30.2 for static and replay checks.
 
-The semantic-navigation interaction was rechecked on 2026-07-21 against
-agent-shell `v0.62.1-15-g8a6ea7a`, Emacspeak
-`60.0-498-g7905520fd`, and Emacs 30.2.
+The complete interaction and documentation were rechecked on 2026-07-21 at
+emacspeak-support `eece826`, against agent-shell
+`v0.62.1-15-g8a6ea7a`, Emacspeak `60.0-498-g7905520fd`, and Emacs 30.2.
+The Emacspeak worktree had a pre-existing unrelated change to `servers/espeak`;
+the recorded revision is the inspected source baseline.
 
 The external agent-shell and Emacspeak worktrees were inspected read-only.
-The existing integration already provides useful automatic response speech,
-thought and tool-output verbosity settings, basic navigation feedback,
-permission intent, and processing earcons.  The main work is to make those
-features semantic, reliable across streaming updates, and aligned with
+At the audit baseline, the integration provided useful automatic response
+speech, thought and tool-output verbosity settings, basic navigation feedback,
+permission intent, and processing earcons.  The work recorded below made those
+paths semantic, reliable across streaming updates, and aligned with
 agent-shell's current public interfaces.
 
 ## Implementation Progress
@@ -52,6 +53,11 @@ Completed so far:
   visual table borders are inaudible, zebra striping remains plain, and the
   full `C-e m` header reading applies core voices to its semantic clauses while
   automatic focus speech remains plain;
+- semantic speech-only replacements for faced pending, in-progress, completed,
+  and failed status icons, with customizable labels and no change to ordinary
+  ellipses; vertical arrow entry into a collapsible label also suppresses the
+  redundant spoken "Press RET to toggle" hint while leaving the visual message
+  and non-arrow action feedback intact;
 - completing-read transcript navigation by agent response, user prompt,
   thought, tool call/group, plan, permission, error, rendered table, or other
   block, with complete body speech, explicit boundaries, collapsed-group
@@ -237,42 +243,35 @@ in Implementation Progress above.
   headers receive separate concise and full semantic speech paths.  Context
   severity uses the guarded private `agent-shell--context-usage-face` helper
   when available, with tested compatibility thresholds for older releases.
-- Every shell can autospeak, so concurrent background agents lack a clear
-  announcement policy or buffer identity.  Focus-aware levels now suppress
+- Every shell can autospeak, so concurrent sessions require explicit policy
+  and identity.  Focus-aware levels now suppress
   background response and tool chatter by default; completed background turns
   use the notification stream and identify their session.
 - Agent-shell does not currently provide current-table-cell values or copy
   commands.  The local logical cell, row, and column copy commands should be
   replaced by advice if agent-shell adds suitable native commands.
 
-### Features With Little or No Semantic Support
+### Remaining Semantic Gaps
 
-- permission choices, focused button feedback, and permission response state;
-- busy, blocked, and ready state, plus public idle, error, and turn-complete
-  lifecycle events;
-- grouped tool calls, status transitions, tool diffs, and failures;
-- fragment summary reading and fold-all commands;
-- Markdown headings, links, inline/source code, and blockquotes;
-- table search and filtered row/column reading beyond the implemented table
-  entry, navigation, context, whole-row/column speech, and cell copying;
-- viewport item/page navigation, compose/cancel/peek, replies, history, and
-  prompt queue management;
-- exact model, session-mode, thought-level, and config-option values;
-- session resume, fork, reload, switch, title, identifier, and transcripts;
-- usage/context threshold warnings;
+- explicit concise-summary, full-response, repeat-last-response, and fold-all
+  commands;
+- public `idle` feedback independent of turn completion;
+- generic viewport item/page, peek, reply, history, and prompt-queue command
+  feedback beyond the implemented compose, submit, cancellation, refresh,
+  header, block, source, and table paths;
+- explicit config-option update speech and automatic context-threshold
+  warnings; exact model, session mode, thought level, and context usage are
+  already available in the full semantic header;
+- session resume, fork, reload, switch, title-change, identifier, and
+  transcript workflows;
+- table search and filtered row/column reading beyond current discovery,
+  two-dimensional movement, whole-row/column reading, and logical copying;
 - attached files, images, screenshots, audio, binary resources, and alt text;
-  and
-- multi-file diff summaries and accept/reject actions.  Once entered,
+- multi-file diff summaries and accept/reject action feedback.  Once entered,
   Emacspeak's existing `diff-mode` support should handle detailed hunk
   navigation rather than being duplicated here.
 
-There is also an untracked alternate implementation in the inspected
-Emacspeak worktree.  Its permission summaries, manual summary/body commands,
-button focus feedback, and viewport navigation are useful design references,
-but it targets removed functions and has a current key conflict.  It should
-not be copied wholesale.
-
-## Proposed Architecture
+## Architecture and Direction
 
 Use public agent-shell events for lifecycle and state:
 
@@ -307,16 +306,22 @@ to both existing and newly created shell buffers.
   warning cue, speak the tool/request summary, then speak numbered choices and
   the current choice.  Moving between buttons speaks choice text, position,
   and action.
-- Normal streaming is accumulated by semantic fragment ID.  Speak rendered
-  content at a reliable fragment or turn boundary, with explicit commands for
-  concise summary and full body.  A timer may coalesce bursts but must not be
-  treated as proof of completion.
+- Normal streaming is accumulated by qualified semantic fragment ID and each
+  update replaces that fragment's stored body.  Speak the ordered rendered
+  content only at public turn completion.  No quiet timer is used as proof of
+  completion; the delay option and timer path remain only for reload
+  compatibility with older loaded versions.
 - Announce tool transitions only when status changes.  Include a short title
   and distinct pending/running/succeeded/failed cues; observe the configured
   output verbosity for the body.
 - Navigation speaks a semantic summary, content kind, fold state, and position
   where useful.  Do not read disclosure triangles, checkbox glyphs, or raw
   decoration as if they were content.
+- Rendered status icons are replaced only in temporary speech copies, using
+  their faces to distinguish semantic state.  Ordinary prose ellipses and the
+  visual buffer are unchanged.  Exact cursor-action hints may be filtered from
+  arrow-key speech when line speech already identifies the same object and
+  non-arrow entry retains the discoverable action.
 - Setting changes speak the selected value, not just "changed".  Session
   announcements include a short title or agent identity when ambiguity is
   possible.
@@ -364,18 +369,26 @@ permission, unknown-block, missing-command, and cleanup failures reproduce.
 Exit criterion: single and simultaneous permission fixtures produce ordered,
 complete speech; every lifecycle outcome has unambiguous feedback exactly once.
 
+Status: complete for permission, initialization, turn-completion, error, and
+interruption paths.  Standalone public idle feedback remains a later polish
+item.
+
 ### Phase 2: Semantic Fragments and Streaming
 
 - Introduce the section-range compatibility adapter.
 - Track complete qualified IDs rather than parsing IDs heuristically.
 - Extract rendered semantic body text and handle unknown content safely.
-- Flush pending content on semantic completion, with a timer only for burst
-  coalescing and recovery.
+- Flush pending content on public semantic completion; retain the former timer
+  only as a reload and teardown compatibility path for older loaded versions.
 - Add concise-summary, full-body, and repeat-last-response commands.
 - Define foreground/background and thought/plan policies.
 
 Exit criterion: chunk boundaries and network pauses do not create duplicate or
 truncated speech, and restored user messages and unknown blocks remain usable.
+
+Status: the semantic boundary, response capture, foreground/background policy,
+and typed fragment navigation are complete.  Explicit summary, full-response,
+and repeat-last-response commands remain.
 
 ### Phase 3: Navigation, Voices, and Viewport
 
@@ -390,6 +403,10 @@ truncated speech, and restored user messages and unknown blocks remain usable.
 
 Exit criterion: all current shell and viewport navigation commands provide
 useful feedback without raw visual decoration, and no advice target is missing.
+
+Status: core and Markdown voices, semantic headers, typed block/source/table
+navigation, and compose lifecycle feedback are complete.  Generic viewport,
+fold, reply, history, queue, and config-update command coverage remains.
 
 ### Phase 4: Rich Content and Session Polish
 
@@ -418,17 +435,21 @@ permissions, tool success/failure, normal/failed/interrupted turns, restored
 messages, collapsed/expanded sections, Markdown code/link/table content,
 viewport navigation and submission, and visible/background sessions.
 
+## Established Defaults
+
+Focused sessions use response speech and background sessions use a named
+completion notification.  Both defaults are customizable, and per-session
+overrides can follow them automatically or select an explicit level.
+
 ## Open Decisions
 
-- Background sessions default to a named completion notification.  Foreground
-  sessions default to response speech, and both policies remain customizable.
 - Whether thought content should remain icon-only by default.  Preserve the
   current default until user testing indicates otherwise.
 - Whether an urgent permission should interrupt all current speech or only
   speech originating from the same shell.  Start with same-shell interruption
   unless Emacspeak's global speech queue makes that distinction impractical.
-- Whether to upstream a stable fragment event/accessor to agent-shell before
-  Phase 2 or maintain a narrow experimental-hook adapter temporarily.
+- Whether to request a stable fragment event/accessor upstream and replace the
+  current narrow experimental-hook adapter.
 - Which commands and bindings should expose summary/full-body speech without
   conflicting with agent-shell's current session configuration bindings.
 
@@ -437,8 +458,12 @@ viewport navigation and submission, and visible/background sessions.
 - [x] Audit current support against agent-shell and Emacspeak.
 - [x] Reproduce permission classification and semantic navigation gaps with
   supplied traffic fixtures.
-- [x] Phase 0: compatibility harness.
-- [ ] Phase 1: permissions and lifecycle.
-- [ ] Phase 2: semantic fragments and streaming.
-- [ ] Phase 3: navigation, voices, and viewport.
-- [ ] Phase 4: rich content and session polish.
+- Phase 0 complete: compatibility harness.
+- Phase 1 core complete: permissions and lifecycle outcomes; standalone idle
+  speech remains.
+- Phase 2 core complete: semantic fragments, streaming boundaries, and speech
+  policy; explicit response summary/repeat commands remain.
+- Phase 3 partially complete: core voices, headers, and typed
+  block/source/table navigation are complete; generic viewport and session
+  command coverage remains.
+- Phase 4 not started: rich content and session polish.

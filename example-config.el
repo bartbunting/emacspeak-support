@@ -1,30 +1,34 @@
-;;; example-config.el --- Example Emacspeak support configuration
+;;; example-config.el --- Example Emacspeak support configuration -*- lexical-binding: t; -*-
 
-;; Add to your ~/.emacs or init.el:
-
-;; 1. Add the emacspeak-support directory to your load path
-(add-to-list 'load-path "~/projects/robertmeta/emacspeak-support")
-
-;; 2. Load the main support module
+;; Add the checkout to `load-path' after Emacspeak has been initialized.
+(add-to-list 'load-path "/path/to/emacspeak-support")
 (require 'emacspeak-support)
 
-;; 3. Enable all extensions (optional - can enable individually)
-(emacspeak-support-enable-all)
+;; Enable integrations selectively after their target packages load.  Remove
+;; entries for packages you do not use.
+(with-eval-after-load 'corfu
+  (emacspeak-support-enable-corfu))
 
-;; Or enable selectively when packages load:
-;; (with-eval-after-load 'corfu
-;;   (emacspeak-support-enable-corfu))
-;;
-;; (with-eval-after-load 'which-key
-;;   (emacspeak-support-enable-which-key))
-;;
-;; (with-eval-after-load 'markdown-mode
-;;   (emacspeak-support-enable-markdown))
+(with-eval-after-load 'vertico
+  (emacspeak-support-enable-vertico))
 
-;; Toggle commands available:
-;; M-x emacspeak-support-toggle-corfu
-;; M-x emacspeak-support-toggle-which-key
-;; M-x emacspeak-support-toggle-markdown
-;; M-x emacspeak-support-status
+(with-eval-after-load 'which-key
+  (emacspeak-support-enable-which-key))
+
+(with-eval-after-load 'markdown-mode
+  (emacspeak-support-enable-markdown))
+
+(with-eval-after-load 'helm
+  (emacspeak-support-enable-helm))
+
+(with-eval-after-load 'agent-shell
+  (emacspeak-support-enable-agent-shell))
+
+;; If every target package is installed, this can replace the selective setup:
+;; (emacspeak-support-enable-all)
+
+;; Use M-x emacspeak-support-status to list enabled integrations.  Every
+;; extension also has emacspeak-support-enable-, -disable-, and -toggle-
+;; commands, such as M-x emacspeak-support-toggle-agent-shell.
 
 ;;; example-config.el ends here

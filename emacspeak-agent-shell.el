@@ -44,13 +44,17 @@
 ;; It is built on shell-maker and provides a comint-based interface.
 ;;
 ;; This module speech-enables agent-shell, providing:
-;; - Automatic speaking of agent responses
-;; - Auditory feedback for tool calls and permissions
-;; - Smart filtering of chunked output
-;; - Navigation support
-;; - Viewport mode integration
+;; - Semantic response speech at public turn-completion boundaries
+;; - Permission, lifecycle, error, and tool-status feedback
+;; - Focus-aware foreground and background speech levels
+;; - Semantic header and face-to-voice support
+;; - Typed transcript and fenced source-block navigation
+;; - Two-dimensional rendered Markdown table navigation and copying
+;; - Viewport mode integration and reload-safe buffer teardown
 ;;
-;; See https://github.com/xenodium/agent-shell for more information.
+;; See README.md and agent-shell-accessibility-plan.md in this repository for
+;; user-facing keys, customization, compatibility notes, and remaining work.
+;; See https://github.com/xenodium/agent-shell for agent-shell itself.
 
 ;;; Code:
 

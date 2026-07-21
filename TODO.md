@@ -1,4 +1,4 @@
-# TODO - Emacspeak Support Extensions
+# TODO — Emacspeak Support Extensions
 
 ## emacspeak-markdown.el
 
@@ -18,6 +18,13 @@
 
 ## General Improvements
 
-- [ ] Add automated tests for speech output
-- [ ] Implement the [agent-shell accessibility plan](agent-shell-accessibility-plan.md)
-- [ ] Document voice personality mappings in user guide
+- [ ] Add deterministic speech tests for the non-agent-shell extensions
+- [ ] Test the documented minimum Emacs version in addition to Emacs 30.2
+
+## Agent Shell
+
+The completed work, remaining phase items, compatibility risks, and open design
+decisions are tracked in the
+[agent-shell accessibility plan](agent-shell-accessibility-plan.md).  The
+highest-value remaining items are explicit response summary/repeat commands,
+generic viewport command feedback, and rich-content/session polish.

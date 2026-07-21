@@ -1,228 +1,166 @@
 # Contributing to Emacspeak Support
 
-Contributions are welcome! This repository serves as a collection of speech support for modern Emacs packages. Whether you're adding support for a new package or improving existing extensions, your contributions help make Emacs more accessible.
+This repository is an iteration and testing home for speech interfaces to
+modern Emacs packages.  A useful contribution makes the package's semantic
+state and available actions understandable through speech, not merely audible.
 
-## Why Contribute Here?
+## Before Editing
 
-- **Faster iteration**: No need to go through the Emacspeak mainline review process
-- **Easy management**: Each extension can be enabled/disabled independently
-- **Community-driven**: Share your speech enhancements with other Emacspeak users
-- **Upstream path**: Well-tested extensions can eventually be contributed to Emacspeak mainline
+- Inspect the target package, the existing support extension, and comparable
+  modules in the Emacspeak codebase.
+- Record the Emacs, Emacspeak, target-package, and support-repository revisions
+  used for compatibility work.
+- Treat external Emacspeak and target-package worktrees as read-only unless the
+  task explicitly includes changing them.
+- Preserve unrelated local changes.
 
-## What to Contribute
+The repository's detailed working and testing rules are in
+[AGENTS.md](AGENTS.md).
 
-Good candidates for new extensions:
+## Design Principles
 
-- Modern Emacs packages not yet supported by Emacspeak
-- Packages with rich UI elements that benefit from speech feedback
-- Completion frameworks, navigation tools, or information displays
-- Any package you use regularly with Emacspeak that needs better speech support
+- Prefer public hooks, events, and commands over advice on private functions.
+- If a private or experimental interface is unavoidable, isolate it behind a
+  small compatibility adapter, document it, and add a test that detects drift.
+- Separate event detection, semantic formatting, policy, and delivery.  A
+  formatter should be testable without a running synthesizer.
+- Keep state buffer-local when it belongs to a package session.
+- Make enable, disable, reload, mode change, and buffer teardown idempotent.
+- Give interactive commands useful speech and an appropriate auditory icon,
+  while avoiding repeated prompts, visual glyphs, and low-value chatter.
+- Use face-to-voice mappings for semantic contrast; do not voice decoration
+  whose only purpose is visual styling.
 
-## Contribution Workflow
+## Extension Structure
 
-1. **Fork the repository** and create a feature branch
-2. **Create your extension** following the development guide below
-3. **Test thoroughly** with Emacs 31+ and Emacspeak
-4. **Submit a pull request** with:
-   - Clear description of the package being speech-enabled
-   - Key features your extension provides
-   - Any special configuration or usage notes
-
-## Code Standards
-
-- Follow GNU Emacs Lisp conventions
-- Include clear commentary sections
-- Add enable/disable functions for toggle support
-- Test all interactive commands provide appropriate feedback
-- Ensure auditory icons play at appropriate times
-
-## Development Guide
-
-### Speech-enabling Pattern
-
-All extensions in this repository follow a standard pattern for speech-enabling Emacs packages:
-
-#### 1. File Structure
-
-Create a new file named `emacspeak-PACKAGE.el` with this structure:
+Create `emacspeak-PACKAGE.el` with lexical binding, commentary, explicit
+requirements, and a provided feature:
 
 ```elisp
 ;;; emacspeak-PACKAGE.el --- Speech-enable PACKAGE -*- lexical-binding: t; -*-
 
-;; Copyright (C) YEAR YOUR NAME
-
-;; Keywords: Emacspeak, Audio Desktop, PACKAGE
-
 ;;; Commentary:
-;; Speech-enables PACKAGE, which provides...
-;; Describe what the package does and what speech features you're adding
+;; Describe PACKAGE and the semantic feedback supplied here.
 
 ;;; Code:
 
 (require 'emacspeak-preamble)
 (require 'PACKAGE)
 
-;; Your extension code here
+;; Speech setup, semantic adapters, formatters, and feedback follow.
 
 (provide 'emacspeak-PACKAGE)
 ;;; emacspeak-PACKAGE.el ends here
 ```
 
-#### 2. Core Components
+### Voice Mappings
 
-**Voice Mappings**: Map package faces to Emacspeak voice personalities:
+Register package faces with Emacspeak personalities:
 
 ```elisp
 (voice-setup-add-map
- '((package-face-name voice-personality)))
+ '((package-heading-face voice-bolden)
+   (package-metadata-face voice-annotate)
+   (package-code-face voice-monotone-extra)))
 ```
 
-Common voice personalities:
+Commonly useful personalities include `voice-bolden`, `voice-annotate`,
+`voice-smoothen`, `voice-lighten`, and `voice-monotone`.  Inspect comparable
+Emacspeak modules before choosing a mapping.  Inventory tests are valuable for
+packages whose face set changes frequently.
 
-- `voice-annotate` - for metadata and annotations
-- `voice-bolden` - for emphasized or important text
-- `voice-smoothen` - for de-emphasized text
-- `voice-monotone` - for technical/literal content
+### Hooks, Events, and Advice
 
-**Helper Functions**: Create functions to extract and format state:
-
-```elisp
-(defun emacspeak-package--get-current-item ()
-  "Extract current item for speech output."
-  ;; Your logic here
-  )
-```
-
-**Interactive Command Advice**: Add `after` advice to user-facing commands:
+Use public semantic notifications when the package offers them:
 
 ```elisp
-(defadvice package-command (after emacspeak pre act comp)
-  "Speak feedback after PACKAGE-COMMAND."
+(defun emacspeak-package--after-selection ()
+  "Speak PACKAGE's selected object."
   (when (ems-interactive-p)
-    (let ((feedback (emacspeak-package--get-current-item)))
-      (dtk-speak feedback)
-      (emacspeak-icon 'select-object))))
+    (emacspeak-icon 'select-object)
+    (dtk-speak (emacspeak-package--selection-text))))
 ```
 
-**Internal Function Advice**: Hook into package internals for real-time updates:
+Advice is appropriate when there is no suitable hook or event.  Keep it named,
+reversible, and limited to a stable user-facing command:
 
 ```elisp
-(cl-declaim (optimize (safety 0) (speed 3)))
-(defadvice package--internal-update (after emacspeak pre act comp)
-  "Provide real-time speech feedback during UI updates."
+(defun emacspeak-package--after-command (&rest _)
+  "Provide speech after an interactive package command."
   (when (ems-interactive-p)
-    (dtk-speak (emacspeak-package--get-current-item))))
+    (emacspeak-package--after-selection)))
+
+(advice-add 'package-command :after #'emacspeak-package--after-command)
+;; Disable with:
+(advice-remove 'package-command #'emacspeak-package--after-command)
 ```
 
-#### 3. Enable/Disable Support
+Asynchronous callbacks generally do not satisfy `ems-interactive-p`; use the
+package's event semantics to decide whether and when to speak them.
 
-Every extension should provide enable and disable functions:
+### Enable and Disable
+
+Every extension must expose `emacspeak-PACKAGE-enable` and
+`emacspeak-PACKAGE-disable`.  Enabling should install hooks, subscriptions,
+advice, keymaps, and setup in existing relevant buffers as well as future
+ones.  Disabling should remove all of them and cancel pending timers or queued
+state.  Calling either function repeatedly must be safe.
+
+Register the extension in `emacspeak-support--extensions` and add the matching
+convenience enable, disable, and toggle commands.  The current registry is:
 
 ```elisp
-(defun emacspeak-package-enable ()
-  "Enable speech support for PACKAGE."
-  (interactive)
-  (ad-activate 'package-command)
-  (ad-activate 'package--internal-update)
-  (message "Enabled Emacspeak support for PACKAGE"))
-
-(defun emacspeak-package-disable ()
-  "Disable speech support for PACKAGE."
-  (interactive)
-  (ad-deactivate 'package-command)
-  (ad-deactivate 'package--internal-update)
-  (message "Disabled Emacspeak support for PACKAGE"))
+'((corfu . "emacspeak-corfu")
+  (vertico . "emacspeak-vertico")
+  (which-key . "emacspeak-which-key")
+  (markdown . "emacspeak-markdown")
+  (helm . "emacspeak-helm")
+  (agent-shell . "emacspeak-agent-shell"))
 ```
 
-#### 4. Register with Main Loader
+Update [README.md](README.md) and [example-config.el](example-config.el) when
+adding an extension or user-facing command.
 
-Add your extension to `emacspeak-support.el`:
+## Testing
 
-```elisp
-(defvar emacspeak-support--extensions
-  '((corfu . "emacspeak-corfu")
-    (which-key . "emacspeak-which-key")
-    (markdown . "emacspeak-markdown")
-    (helm . "emacspeak-helm")
-    (your-package . "emacspeak-your-package"))  ;; Add this line
-  "Alist of extension symbols to file names.")
-```
+Test in layers; loading successfully is only the first layer.
 
-And add convenience functions:
+1. Run `check-parens`, byte compilation with all relevant directories on
+   `load-path`, a batch load, and the enable/disable cycle.
+2. Add ERT tests that replace at least `dtk-speak`, `dtk-stop`, and
+   `emacspeak-icon` with collectors and assert the ordered semantic result.
+3. For event- or protocol-driven packages, replay checked-in redacted fixtures
+   through the same handlers used at runtime.
+4. Drive a clean Emacs session with Emacspeak's logging speech server and
+   compare the protocol log with an expected transcript.
+5. Finish high-impact speech changes by listening with a normal speech server.
 
-```elisp
-(defun emacspeak-support-enable-your-package ()
-  "Enable Emacspeak support for YOUR-PACKAGE."
-  (interactive)
-  (emacspeak-support-enable 'your-package))
+The exact logging-server command, privacy cautions, and required scenarios are
+documented in [AGENTS.md](AGENTS.md).  Agent-shell test commands and path
+overrides are in [tests/README.md](tests/README.md).
 
-(defun emacspeak-support-disable-your-package ()
-  "Disable Emacspeak support for YOUR-PACKAGE."
-  (interactive)
-  (emacspeak-support-disable 'your-package))
+Do not commit raw speech logs or ACP traffic: they may contain prompts, source
+text, paths, tokens, or agent responses.
 
-(defun emacspeak-support-toggle-your-package ()
-  "Toggle Emacspeak support for YOUR-PACKAGE."
-  (interactive)
-  (emacspeak-support-toggle 'your-package))
-```
+## Reference Extensions
 
-### Key Emacspeak Functions
+- `emacspeak-corfu.el`: completion candidates, annotations, and position.
+- `emacspeak-vertico.el`: minibuffer completion and candidate-count changes.
+- `emacspeak-which-key.el`: popup timing and page speech.
+- `emacspeak-markdown.el`: semantic reading and voice personalities.
+- `emacspeak-helm.el`: scoped message suppression and key dispatch.
+- `emacspeak-agent-shell.el`: public event subscriptions, concurrent session
+  policy, semantic navigation, and deterministic fixture replay.
 
-**Speech Output:**
+## Submitting a Change
 
-- `dtk-speak TEXT` - Speak text via text-to-speech
-- `dtk-speak-and-echo TEXT` - Speak and display text
+Include:
 
-**Auditory Icons:**
+- the user-facing problem and intended speech behavior;
+- the public or compatibility interfaces used;
+- revisions and Emacs versions tested;
+- automated checks and manual/logged-speech scenarios run; and
+- remaining risks or target-package behavior that is still unsupported.
 
-- `(emacspeak-icon 'select-object)` - Object selection sound
-- `(emacspeak-icon 'on)` - Feature enabled sound
-- `(emacspeak-icon 'off)` - Feature disabled sound
-- `(emacspeak-icon 'open-object)` - Opening/expanding sound
-- `(emacspeak-icon 'close-object)` - Closing/collapsing sound
-
-**Checking Context:**
-
-- `(ems-interactive-p)` - Check if command was called interactively (use in advice)
-
-### Testing Your Extension
-
-1. **Load in a running Emacspeak session:**
-
-```elisp
-(load-file "/path/to/emacspeak-your-package.el")
-(emacspeak-your-package-enable)
-```
-
-Or use `M-x eval-buffer` after opening the file.
-
-2. **Verify speech feedback:**
-
-- Interactive commands provide appropriate feedback
-- UI updates speak current selection/state
-- Auditory icons play at appropriate times
-- Annotations are properly voiced when available
-
-3. **Test toggle functionality:**
-
-```elisp
-M-x emacspeak-support-enable-your-package
-M-x emacspeak-support-disable-your-package
-M-x emacspeak-support-toggle-your-package
-```
-
-### Examples
-
-Look at existing extensions for reference:
-
-- `emacspeak-corfu.el` - Complex UI with annotations and position tracking
-- `emacspeak-which-key.el` - Auto-speak with timer integration
-- `emacspeak-markdown.el` - Custom navigation and voice personalities
-- `emacspeak-helm.el` - Advice-based improvements and custom key dispatchers
-
-### Getting Help
-
-- Check existing extensions in this repository for patterns
-- Review Emacspeak documentation at https://tvraman.github.io/emacspeak/
-- Open an issue for questions or guidance
+Emacspeak documentation is available at
+<https://tvraman.github.io/emacspeak/>.
