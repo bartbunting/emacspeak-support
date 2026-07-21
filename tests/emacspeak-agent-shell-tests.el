@@ -48,6 +48,7 @@
 (defvar emacspeak-agent-shell-table-titles)
 (defvar emacspeak-agent-shell-tool-output-verbosity)
 (defvar emacspeak-agent-shell-speech-level)
+(defvar emacspeak-agent-shell-status-speech-labels)
 (defvar emacspeak-comint-autospeak)
 (defvar dtk-yank-excluded-properties)
 (defvar ems--message-filter)
@@ -115,6 +116,8 @@
 (declare-function emacspeak-agent-shell--speak-focus-header-if-needed
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--prepare-speech-text
+                  "emacspeak-agent-shell" (text))
+(declare-function emacspeak-agent-shell--replace-status-icons-for-speech
                   "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--record-response-section
                   "emacspeak-agent-shell" (range))
@@ -211,6 +214,7 @@
 
 (declare-function agent-shell--make-permission-button
                   "agent-shell" (&rest arguments))
+(declare-function agent-shell--format-plan "agent-shell" (entries))
 (declare-function agent-shell--save-tool-call
                   "agent-shell" (state tool-call-id tool-call))
 (declare-function agent-shell-markdown-replace-markup
@@ -3378,6 +3382,56 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (insert (propertize "status" 'face (car entry)))
       (goto-char (point-min))
       (should (eq (dtk-get-style) (cdr entry))))))
+
+(ert-deftest emacspeak-agent-shell-rendered-plan-speaks-semantic-statuses ()
+  "Rendered plan icons should become voiced status words in speech copies."
+  (let ((agent-shell-status-kind-label-function
+         #'agent-shell--inverse-icon-status-kind-label))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (let* ((rendered
+              (agent-shell--format-plan
+               '(((status . "pending") (content . "Wait step"))
+                 ((status . "in_progress") (content . "Busy step"))
+                 ((status . "completed") (content . "Done step"))
+                 ((status . "failed") (content . "Failed step")))))
+             (spoken
+              (emacspeak-agent-shell--prepare-speech-text rendered)))
+        (should
+         (equal
+          (substring-no-properties rendered)
+          "[…] Wait step\n[…] Busy step\n[✓] Done step\n[✗] Failed step"))
+        (should
+         (equal
+          (substring-no-properties spoken)
+          (concat
+           "[ pending ] Wait step\n[ in progress ] Busy step\n"
+           "[ completed ] Done step\n[ failed ] Failed step")))
+        (should (string-match-p "…" rendered))
+        (should-not (string-match-p "[…✓✗]" spoken))
+        (let ((position (string-match "pending" spoken)))
+          (should position)
+          (should
+           (text-property-not-all
+            position (+ position (length "pending"))
+            'font-lock-face nil spoken)))))))
+
+(ert-deftest emacspeak-agent-shell-status-speech-is-scoped-and-customizable ()
+  "Only faced status icons should use the customizable semantic label."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (let* ((emacspeak-agent-shell-status-speech-labels
+            '((pending . "waiting")))
+           (rendered
+            (concat
+             (propertize "…" 'font-lock-face 'agent-shell-pending)
+             " ordinary …"))
+           (spoken
+            (emacspeak-agent-shell--prepare-speech-text rendered)))
+      (should (equal (substring-no-properties spoken)
+                     " waiting  ordinary …"))
+      (should (equal (substring-no-properties rendered)
+                     "… ordinary …")))))
 
 (ert-deftest emacspeak-agent-shell-markdown-face-inventory-is-current ()
   "Every current agent-shell Markdown face should be classified."

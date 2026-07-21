@@ -176,6 +176,24 @@ both, or neither kind of title."
                  (const :tag "Titles before data" last))
   :group 'emacspeak-agent-shell)
 
+(defcustom emacspeak-agent-shell-status-speech-labels
+  '((pending . "pending")
+    (in-progress . "in progress")
+    (completed . "completed")
+    (failed . "failed"))
+  "Words spoken for agent-shell's rendered status icons.
+These substitutions affect only speech copies in agent-shell and its viewport;
+the visual icons remain unchanged.  Remove an entry to leave that status icon
+for the active speech server to interpret."
+  :type '(repeat
+          (cons
+           (choice (const :tag "Pending" pending)
+                   (const :tag "In progress" in-progress)
+                   (const :tag "Completed" completed)
+                   (const :tag "Failed" failed))
+           (string :tag "Spoken label")))
+  :group 'emacspeak-agent-shell)
+
 ;;;  Speech Setup
 
 ;;;###autoload
@@ -298,13 +316,77 @@ properties while copying TEXT into its private scratch buffer."
         copy)
     text))
 
+;; Agent-shell exposes a customizable renderer but no semantic status text
+;; property.  Keep this glyph/face compatibility adapter isolated here; the
+;; rendered-plan fixture test detects upstream rendering drift.
+(defconst emacspeak-agent-shell--status-icon-contexts
+  '((?… agent-shell-pending pending)
+    (?… agent-shell-warning in-progress)
+    (?✓ agent-shell-success completed)
+    (?✗ agent-shell-error failed))
+  "Rendered icon, face, and semantic status triples used for speech.")
+
+(defun emacspeak-agent-shell--face-spec-includes-p (spec face)
+  "Return non-nil when face SPEC contains FACE."
+  (cond
+   ((eq spec face) t)
+   ((consp spec)
+    (or (emacspeak-agent-shell--face-spec-includes-p (car spec) face)
+        (emacspeak-agent-shell--face-spec-includes-p (cdr spec) face)))
+   (t nil)))
+
+(defun emacspeak-agent-shell--status-at (text position)
+  "Return the semantic status represented at POSITION in TEXT."
+  (let ((character (aref text position))
+        (face (get-text-property position 'face text))
+        (font-lock-face
+         (get-text-property position 'font-lock-face text)))
+    (cl-loop
+     for (icon status-face status)
+     in emacspeak-agent-shell--status-icon-contexts
+     when (and (= character icon)
+               (or
+                (emacspeak-agent-shell--face-spec-includes-p
+                 face status-face)
+                (emacspeak-agent-shell--face-spec-includes-p
+                 font-lock-face status-face)))
+     return status)))
+
+(defun emacspeak-agent-shell--replace-status-icons-for-speech (text)
+  "Return TEXT with faced agent-shell status icons replaced semantically.
+Only the returned speech string is changed.  Replacement words retain the
+icon's text properties so its status voice remains available to Emacspeak."
+  (let (replacements)
+    (dotimes (position (length text))
+      (when-let* ((status (emacspeak-agent-shell--status-at text position))
+                  (label
+                   (map-elt emacspeak-agent-shell-status-speech-labels
+                            status)))
+        (let ((replacement (format " %s " label)))
+          (set-text-properties
+           0 (length replacement) (text-properties-at position text)
+           replacement)
+          ;; Positions are visited in ascending order, so pushing makes this
+          ;; list safe to apply from the end of the string toward its start.
+          (push (cons position replacement) replacements))))
+    (if (null replacements)
+        text
+      (let ((result text))
+        (dolist (replacement replacements result)
+          (let ((position (car replacement)))
+            (setq result
+                  (concat (substring result 0 position)
+                          (cdr replacement)
+                          (substring result (1+ position))))))))))
+
 (defun emacspeak-agent-shell--prepare-speech-text (text)
   "Prepare TEXT for speech in agent-shell, leaving other modes unchanged."
   (if (and (stringp text)
            (derived-mode-p 'agent-shell-mode
                            'agent-shell-viewport-view-mode
                            'agent-shell-viewport-edit-mode))
-      (emacspeak-agent-shell--speech-copy-without-yank-handler text)
+      (emacspeak-agent-shell--replace-status-icons-for-speech
+       (emacspeak-agent-shell--speech-copy-without-yank-handler text))
     text))
 
 (defconst emacspeak-agent-shell--vertical-toggle-hint-regexp
