@@ -50,6 +50,7 @@
 (defvar emacspeak-agent-shell-speech-level)
 (defvar emacspeak-comint-autospeak)
 (defvar dtk-yank-excluded-properties)
+(defvar ems--message-filter)
 (defvar agent-shell--state)
 (defvar agent-shell-section-functions)
 (defvar agent-shell-header-style)
@@ -124,6 +125,14 @@
 (declare-function emacspeak-agent-shell--speech-copy-without-yank-handler
                   "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--install-speech-control-bindings
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--filter-vertical-toggle-hint
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--restore-message-filter
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--vertical-toggle-hint-cleanup
+                  "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--vertical-toggle-hint-setup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-next-block-of-type
                   "emacspeak-agent-shell" ())
@@ -1047,6 +1056,53 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (setq agent-shell-viewport-edit-mode-hook saved-viewport-edit-hook
             agent-shell-viewport-view-mode-hook saved-viewport-view-hook)
       (emacspeak-agent-shell-test--restore-advice-state saved-advice))))
+
+(ert-deftest emacspeak-agent-shell-vertical-motion-silences-toggle-hint ()
+  "Arrowing should filter the toggle hint until cursor sensors have run."
+  (dolist (command '(next-line previous-line))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local ems--message-filter "Decrypting")
+      (let ((this-command command))
+        (emacspeak-agent-shell--filter-vertical-toggle-hint))
+      (should (string-match-p ems--message-filter "Decrypting"))
+      (should (string-match-p ems--message-filter "Press RET to toggle"))
+      (emacspeak-agent-shell--restore-message-filter)
+      (should (equal ems--message-filter "Decrypting")))))
+
+(ert-deftest emacspeak-agent-shell-toggle-hint-filter-is-narrow ()
+  "Non-vertical commands should not alter the message filter."
+  (dolist (command '(forward-char agent-shell-next-item ignore))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local ems--message-filter "original")
+      (let ((this-command command))
+        (emacspeak-agent-shell--filter-vertical-toggle-hint))
+      (should (equal ems--message-filter "original")))))
+
+(ert-deftest emacspeak-agent-shell-toggle-filter-restores-after-sensors ()
+  "Restore the original filter after agent-shell's cursor sensors run."
+  (with-temp-buffer
+    (cursor-sensor-mode 1)
+    (emacspeak-agent-shell--vertical-toggle-hint-setup)
+    (should
+     (< (seq-position post-command-hook #'cursor-sensor--detect)
+        (seq-position
+         post-command-hook
+         #'emacspeak-agent-shell--restore-message-filter)))
+    (kill-local-variable 'ems--message-filter)
+    (let ((this-command 'previous-line))
+      (emacspeak-agent-shell--filter-vertical-toggle-hint))
+    (should (local-variable-p 'ems--message-filter))
+    (emacspeak-agent-shell--restore-message-filter)
+    (should-not (local-variable-p 'ems--message-filter))
+    (emacspeak-agent-shell--vertical-toggle-hint-cleanup)
+    (should-not
+     (memq #'emacspeak-agent-shell--filter-vertical-toggle-hint
+           pre-command-hook))
+    (should-not
+     (memq #'emacspeak-agent-shell--restore-message-filter
+           post-command-hook))))
 
 (ert-deftest emacspeak-agent-shell-permission-fixture-is-urgent ()
   "A fixture permission should interrupt and be spoken in full."

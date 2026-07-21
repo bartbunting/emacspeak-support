@@ -307,6 +307,60 @@ properties while copying TEXT into its private scratch buffer."
       (emacspeak-agent-shell--speech-copy-without-yank-handler text)
     text))
 
+(defconst emacspeak-agent-shell--vertical-toggle-hint-regexp
+  "\\`Press RET to toggle\\'"
+  "Exact message pattern for agent-shell's collapsible-label cursor sensor.")
+
+(defvar-local emacspeak-agent-shell--saved-message-filter nil
+  "Saved local-state flag and value for `ems--message-filter'.")
+
+(defun emacspeak-agent-shell--restore-message-filter ()
+  "Restore the message filter saved before vertical motion."
+  (when emacspeak-agent-shell--saved-message-filter
+    (let ((was-local
+           (car emacspeak-agent-shell--saved-message-filter))
+          (value
+           (cdr emacspeak-agent-shell--saved-message-filter)))
+      (setq emacspeak-agent-shell--saved-message-filter nil)
+      (if was-local
+          (setq-local ems--message-filter value)
+        (kill-local-variable 'ems--message-filter)))))
+
+(defun emacspeak-agent-shell--filter-vertical-toggle-hint ()
+  "Temporarily filter the redundant action hint before vertical motion.
+Normal Emacspeak line speech describes the collapsible label.  Keep
+agent-shell's cursor-sensor message visible, but filter its exact text from
+speech until the cursor sensor has run from `post-command-hook'."
+  (when (memq this-command '(next-line previous-line))
+    (emacspeak-agent-shell--restore-message-filter)
+    (setq emacspeak-agent-shell--saved-message-filter
+          (cons (local-variable-p 'ems--message-filter)
+                ems--message-filter))
+    (setq-local
+     ems--message-filter
+     (if (stringp ems--message-filter)
+         (concat "\\(?:" ems--message-filter "\\|"
+                 emacspeak-agent-shell--vertical-toggle-hint-regexp
+                 "\\)")
+       emacspeak-agent-shell--vertical-toggle-hint-regexp))))
+
+(defun emacspeak-agent-shell--vertical-toggle-hint-setup ()
+  "Install buffer-local filtering for vertical collapsible-label entry."
+  (add-hook 'pre-command-hook
+            #'emacspeak-agent-shell--filter-vertical-toggle-hint nil t)
+  ;; Cursor sensors run from `post-command-hook'.  Restore afterward so
+  ;; non-arrow entry still speaks the action hint.
+  (add-hook 'post-command-hook
+            #'emacspeak-agent-shell--restore-message-filter t t))
+
+(defun emacspeak-agent-shell--vertical-toggle-hint-cleanup ()
+  "Remove vertical collapsible-label filtering from the current buffer."
+  (emacspeak-agent-shell--restore-message-filter)
+  (remove-hook 'pre-command-hook
+               #'emacspeak-agent-shell--filter-vertical-toggle-hint t)
+  (remove-hook 'post-command-hook
+               #'emacspeak-agent-shell--restore-message-filter t))
+
 (defvar emacspeak-agent-shell--pending-speech-timer nil
   "Legacy timer left by pause-based response speech.
 New response capture uses semantic turn completion and never creates this
@@ -2847,6 +2901,7 @@ Return nil when that logical cell does not exist."
 (defun emacspeak-agent-shell--table-navigation-setup ()
   "Install contextual Markdown table navigation in the current buffer."
   (setq emacspeak-agent-shell--speech-control-active t)
+  (emacspeak-agent-shell--vertical-toggle-hint-setup)
   (add-hook 'pre-command-hook
             #'emacspeak-agent-shell--table-navigation-pre-command nil t)
   (add-hook 'post-command-hook
@@ -2863,6 +2918,7 @@ Return nil when that logical cell does not exist."
 
 (defun emacspeak-agent-shell--table-navigation-cleanup ()
   "Remove contextual Markdown table navigation from the current buffer."
+  (emacspeak-agent-shell--vertical-toggle-hint-cleanup)
   (setq emacspeak-agent-shell--speech-control-active nil
         emacspeak-agent-shell--table-navigation-active nil
         emacspeak-agent-shell--table-navigation-table-start nil
