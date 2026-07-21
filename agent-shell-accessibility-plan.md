@@ -54,6 +54,9 @@ Completed so far:
   voices while excluding thoughts, plans, tools, and other activity; the
   command remains available at every automatic speech level and uses the
   complete response only for legacy unannotated transcripts;
+- `C-c R` gives a bounded overview of that answer: line count, nonzero heading,
+  source-block, and table counts, followed by its opening sentence or a short
+  opening phrase;
 - current viewport compose submission and accepted-cancellation feedback,
   distinguishing immediate submission from queueing, continued composition,
   and compose-window dismissal while suppressing false success and
@@ -230,6 +233,11 @@ answer fragments are read in order; thought, plan, tool, and other activity
 fragments are omitted.  The command does not move point, and an explicit
 invocation bypasses automatic foreground/background speech levels.
 
+`C-c R` uses the same semantic answer but does not replay it.  It reports line
+count plus nonzero rendered heading, code-block, and table counts, then reads
+only the opening sentence or a bounded opening phrase.  It likewise preserves
+point and bypasses automatic speech levels when invoked explicitly.
+
 ## Findings
 
 ### Original Highest-Priority Defects
@@ -295,7 +303,7 @@ in Implementation Progress above.
 
 ### Remaining Semantic Gaps
 
-- an explicit concise response overview and fold-all commands;
+- a fold-all command;
 - public `idle` feedback independent of turn completion;
 - generic viewport item/page, peek, reply, history, and prompt-queue command
   feedback beyond the implemented compose, submit, cancellation, refresh,
@@ -369,6 +377,8 @@ to both existing and newly created shell buffers.
   possible.
 - Explicit latest-response speech reads all answer fragments regardless of
   automatic speech level, without moving point or replaying activity details.
+  Its companion overview reports useful rendered structure and only a bounded
+  opening.
 - Foreground output defaults to response speech without routine tool, thought,
   or plan chatter.  Background output defaults to completion notifications
   with a session prefix; verbose background response speech is opt-in.
@@ -435,8 +445,7 @@ usable.
 
 Status: the semantic boundary, response/thought/plan capture, one-time
 out-of-turn delivery, foreground/background policy, full latest-answer replay,
-and typed fragment navigation are complete.  An explicit concise overview
-remains.
+concise structural overview, and typed fragment navigation are complete.
 
 ### Phase 3: Navigation, Voices, and Viewport
 

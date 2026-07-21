@@ -45,7 +45,7 @@
 ;;
 ;; This module speech-enables agent-shell, providing:
 ;; - Semantic response, thought, and plan speech at turn-completion boundaries
-;; - On-demand full speech for the latest semantic agent answer
+;; - On-demand full and structural-overview speech for the latest agent answer
 ;; - Permission, lifecycle, error, and tool-status feedback
 ;; - Focus-aware foreground and background speech levels
 ;; - Semantic header and face-to-voice support
@@ -934,6 +934,8 @@ selects the configured foreground or background level."
               #'emacspeak-agent-shell-copy-source-block)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c r")
               #'emacspeak-agent-shell-speak-last-response)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c R")
+              #'emacspeak-agent-shell-speak-response-overview)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c ]")
               #'emacspeak-agent-shell-next-block-of-type)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c [")
@@ -1751,6 +1753,106 @@ fallback only when RESPONSE has no agent-shell semantic fragment properties."
                  response)))
           (error nil))))))
 
+(defconst emacspeak-agent-shell--response-overview-preview-limit 120
+  "Maximum characters used for a response overview's opening phrase.")
+
+(defconst emacspeak-agent-shell--markdown-heading-faces
+  '(agent-shell-markdown-header-1
+    agent-shell-markdown-header-2
+    agent-shell-markdown-header-3
+    agent-shell-markdown-header-4
+    agent-shell-markdown-header-5
+    agent-shell-markdown-header-6)
+  "Rendered Markdown faces counted as headings in response overviews.")
+
+(defun emacspeak-agent-shell--string-run-count (text predicate)
+  "Count contiguous runs in TEXT for which PREDICATE returns non-nil.
+PREDICATE receives TEXT and the start position of each property run."
+  (let ((position 0)
+        (end (length text))
+        active-p
+        (count 0))
+    (while (< position end)
+      (let ((match-p (funcall predicate text position)))
+        (when (and match-p (not active-p))
+          (setq count (1+ count)))
+        (setq active-p match-p
+              position
+              (or (next-property-change position text end) end))))
+    count))
+
+(defun emacspeak-agent-shell--string-property-run-count (text property)
+  "Count contiguous non-nil PROPERTY runs in TEXT."
+  (emacspeak-agent-shell--string-run-count
+   text
+   (lambda (value position)
+     (get-text-property position property value))))
+
+(defun emacspeak-agent-shell--string-heading-run-count (text)
+  "Count contiguous rendered Markdown heading runs in TEXT."
+  (emacspeak-agent-shell--string-run-count
+   text
+   (lambda (value position)
+     (let ((face (get-text-property position 'face value))
+           (font-lock-face
+            (get-text-property position 'font-lock-face value)))
+       (seq-some
+        (lambda (heading)
+          (or (emacspeak-agent-shell--face-spec-includes-p face heading)
+              (emacspeak-agent-shell--face-spec-includes-p
+               font-lock-face heading)))
+        emacspeak-agent-shell--markdown-heading-faces)))))
+
+(defun emacspeak-agent-shell--response-overview-preview (answer)
+  "Return a bounded opening sentence or phrase from ANSWER."
+  (let* ((plain
+          (string-trim
+           (replace-regexp-in-string
+            "[[:space:]]+" " " (substring-no-properties answer))))
+         (limit emacspeak-agent-shell--response-overview-preview-limit)
+         (sentence-start
+          (string-match "[.!?]\\(?:[[:space:]]\\|\\'\\)" plain))
+         (sentence-end (and sentence-start (1+ sentence-start))))
+    (cond
+     ((and sentence-end (<= sentence-end limit))
+      (substring plain 0 sentence-end))
+     ((<= (length plain) limit) plain)
+     (t
+      (let* ((prefix (substring plain 0 limit))
+             (word-start
+              (string-match "[[:space:]][^[:space:]]*\\'" prefix))
+             (cut (or word-start limit)))
+        (concat (string-trim-right (substring prefix 0 cut))
+                ", continued"))))))
+
+(defun emacspeak-agent-shell--response-overview (answer)
+  "Return a concise structural overview of rendered ANSWER."
+  (let* ((lines (1+ (cl-count ?\n answer)))
+         (headings
+          (emacspeak-agent-shell--string-heading-run-count answer))
+         (source-blocks
+          (emacspeak-agent-shell--string-property-run-count
+           answer 'agent-shell-markdown-source-block-body))
+         (tables
+          (emacspeak-agent-shell--string-property-run-count
+           answer 'agent-shell-markdown-table-source))
+         (parts
+          (list (format "%d %s" lines (if (= lines 1) "line" "lines")))))
+    (dolist (entry `((,headings . "heading")
+                     (,source-blocks . "code block")
+                     (,tables . "table")))
+      (when (> (car entry) 0)
+        (setq parts
+              (append
+               parts
+               (list
+                (format "%d %s%s"
+                        (car entry) (cdr entry)
+                        (if (= (car entry) 1) "" "s")))))))
+    (format "Last response: %s. Begins: %s"
+            (string-join parts ", ")
+            (emacspeak-agent-shell--response-overview-preview answer))))
+
 (defun emacspeak-agent-shell-speak-last-response ()
   "Speak the latest agent answer in full without moving point."
   (interactive)
@@ -1759,6 +1861,17 @@ fallback only when RESPONSE has no agent-shell semantic fragment properties."
         (dtk-stop)
         (emacspeak-icon 'item)
         (dtk-speak answer))
+    (emacspeak-icon 'warn-user)
+    (dtk-speak "No agent response available.")))
+
+(defun emacspeak-agent-shell-speak-response-overview ()
+  "Speak a concise structural overview of the latest agent answer."
+  (interactive)
+  (if-let ((answer (emacspeak-agent-shell--latest-agent-answer)))
+      (progn
+        (dtk-stop)
+        (emacspeak-icon 'item)
+        (dtk-speak (emacspeak-agent-shell--response-overview answer)))
     (emacspeak-icon 'warn-user)
     (dtk-speak "No agent response available.")))
 

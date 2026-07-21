@@ -90,6 +90,8 @@
                   "emacspeak-agent-shell" (location))
 (declare-function emacspeak-agent-shell-speak-last-response
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell-speak-response-overview
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--jump-block-of-type
                   "emacspeak-agent-shell" (type direction &optional origin))
 (declare-function emacspeak-agent-shell--buffer-setup
@@ -130,6 +132,8 @@
                   "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--record-response-section
                   "emacspeak-agent-shell" (range))
+(declare-function emacspeak-agent-shell--response-overview
+                  "emacspeak-agent-shell" (answer))
 (declare-function emacspeak-agent-shell--out-of-turn-cleanup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--response-section-cleanup
@@ -1250,6 +1254,92 @@ Return speech events plus the target character.  DIRECTION is `forward' or
     (should-not
      (emacspeak-agent-shell--agent-answer-from-response thought-only))))
 
+(ert-deftest emacspeak-agent-shell-response-overview-is-structural-and-bounded ()
+  "Response overview should count structure and read only a bounded opening."
+  (let ((answer
+         (concat
+          (propertize
+           "Summary" 'face 'agent-shell-markdown-header-1)
+          "\nImplemented the completion fix. More details follow.\n"
+          (propertize
+           "(message \"ok\")"
+           'agent-shell-markdown-source-block-body t)
+          "\n"
+          (propertize
+           "Name │ Value"
+           'agent-shell-markdown-table-source "| Name | Value |"))))
+    (should
+     (equal
+      (emacspeak-agent-shell--response-overview answer)
+      (concat
+       "Last response: 4 lines, 1 heading, 1 code block, 1 table. "
+       "Begins: Summary Implemented the completion fix."))))
+  (let ((overview
+         (emacspeak-agent-shell--response-overview
+          (make-string 200 ?x))))
+    (should (string-prefix-p "Last response: 1 line. Begins: " overview))
+    (should (string-suffix-p ", continued" overview))
+    (should-not (string-match-p (make-string 121 ?x) overview)))
+  (let ((answer
+         (concat
+          (propertize "One" 'face 'agent-shell-markdown-header-1)
+          "\nIntro.\n"
+          (propertize "Two" 'face 'agent-shell-markdown-header-2)
+          "\n"
+          (propertize "code one" 'agent-shell-markdown-source-block-body t)
+          "\nplain\n"
+          (propertize "code two" 'agent-shell-markdown-source-block-body t)
+          "\n"
+          (propertize "table one" 'agent-shell-markdown-table-source "one")
+          "\nplain\n"
+          (propertize "table two" 'agent-shell-markdown-table-source "two"))))
+    (should
+     (equal
+      (emacspeak-agent-shell--response-overview answer)
+      (concat
+       "Last response: 9 lines, 2 headings, 2 code blocks, 2 tables. "
+       "Begins: One Intro.")))))
+
+(ert-deftest emacspeak-agent-shell-response-overview-counts-rendered-markdown ()
+  "Overview counts should follow current agent-shell Markdown properties."
+  (with-temp-buffer
+    (setq-local agent-shell-section-functions nil)
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "answer-agent_message_chunk"
+     :body
+     (concat
+      "# Result\n\nImplemented the fix.\n\n"
+      "```elisp\n(+ 1 2)\n```\n\n"
+      "| Name | Value |\n| --- | --- |\n| one | 1 |"))
+    (should
+     (equal
+      (emacspeak-agent-shell--response-overview
+       (emacspeak-agent-shell--agent-answer-from-response
+        (buffer-string)))
+      (concat
+       "Last response: 13 lines, 1 heading, 1 code block, 1 table. "
+       "Begins: Result Implemented the fix.")))))
+
+(ert-deftest emacspeak-agent-shell-speak-response-overview-is-explicit ()
+  "Overview speech should work at quiet level without reading the full answer."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (setq-local emacspeak-comint-autospeak nil)
+    (setq-local emacspeak-agent-shell-speech-level 'quiet)
+    (let ((position (point)))
+      (cl-letf
+          (((symbol-function 'emacspeak-agent-shell--latest-agent-answer)
+            (lambda () "Implemented the fix. Unspoken detail follows.")))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell-speak-response-overview))
+          '((stop nil)
+            (icon item)
+            (speak
+             "Last response: 1 line. Begins: Implemented the fix.")))))
+      (should (= (point) position)))))
+
 (ert-deftest emacspeak-agent-shell-speak-last-response-works-in-session-views ()
   "Explicit last-response speech should work without moving shell or viewport."
   (let ((shell (generate-new-buffer " *agent-shell-last-response*"))
@@ -1307,8 +1397,8 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (when (buffer-live-p shell)
         (kill-buffer shell)))))
 
-(ert-deftest emacspeak-agent-shell-speak-last-response-reports-empty-session ()
-  "Explicit last-response speech should report when no answer is available."
+(ert-deftest emacspeak-agent-shell-response-commands-report-empty-session ()
+  "Explicit response commands should report when no answer is available."
   (with-temp-buffer
     (setq major-mode 'agent-shell-mode)
     (let ((position (point)))
@@ -1316,12 +1406,14 @@ Return speech events plus the target character.  DIRECTION is `forward' or
                  (lambda () nil))
                 ((symbol-function 'agent-shell-interaction-at-point)
                  (lambda () nil)))
-        (should
-         (equal
-          (emacspeak-agent-shell-test--capture-events
-            (emacspeak-agent-shell-speak-last-response))
-          '((icon warn-user)
-            (speak "No agent response available.")))))
+        (dolist (command '(emacspeak-agent-shell-speak-last-response
+                           emacspeak-agent-shell-speak-response-overview))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (funcall command))
+            '((icon warn-user)
+              (speak "No agent response available."))))))
       (should (= (point) position)))))
 
 (ert-deftest emacspeak-agent-shell-user-message-fixture-is-semantic ()
@@ -1717,6 +1809,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          (speak-source-key (kbd "C-c C-b"))
          (copy-source-key (kbd "C-c C-y"))
          (last-response-key (kbd "C-c r"))
+         (response-overview-key (kbd "C-c R"))
          (next-block-key (kbd "C-c ]"))
          (previous-block-key (kbd "C-c ["))
          (context-next-key (kbd "]"))
@@ -1726,6 +1819,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          (saved-speak-source (lookup-key map speak-source-key))
          (saved-copy-source (lookup-key map copy-source-key))
          (saved-last-response (lookup-key map last-response-key))
+         (saved-response-overview (lookup-key map response-overview-key))
          (saved-next-block (lookup-key map next-block-key))
          (saved-previous-block (lookup-key map previous-block-key))
          (saved-context-next (lookup-key map context-next-key))
@@ -1738,6 +1832,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (define-key map speak-source-key nil)
           (define-key map copy-source-key nil)
           (define-key map last-response-key nil)
+          (define-key map response-overview-key nil)
           (define-key map next-block-key nil)
           (define-key map previous-block-key nil)
           (define-key map context-next-key nil)
@@ -1759,6 +1854,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            (eq (lookup-key map last-response-key)
                #'emacspeak-agent-shell-speak-last-response))
           (should
+           (eq (lookup-key map response-overview-key)
+               #'emacspeak-agent-shell-speak-response-overview))
+          (should
            (eq (lookup-key map next-block-key)
                #'emacspeak-agent-shell-next-block-of-type))
           (should
@@ -1775,6 +1873,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (define-key map speak-source-key saved-speak-source)
       (define-key map copy-source-key saved-copy-source)
       (define-key map last-response-key saved-last-response)
+      (define-key map response-overview-key saved-response-overview)
       (define-key map next-block-key saved-next-block)
       (define-key map previous-block-key saved-previous-block)
       (define-key map context-next-key saved-context-next)
