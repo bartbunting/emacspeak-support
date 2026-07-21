@@ -109,6 +109,9 @@ asynchronous, multi-session interface.  It currently includes:
 - semantic response speech at the public turn-completion boundary, with
   thought and plan speech at full detail, without treating a network pause as
   completion;
+- one-time focused speech for agent messages that arrive outside a submitted
+  turn, with a named content-free notification when their session is in the
+  background and silence for restored history;
 - distinct permission, lifecycle, error, and tool-status feedback;
 - focus-aware foreground and background speech levels;
 - viewport submission feedback that distinguishes submitted and queued prompts,
@@ -126,8 +129,8 @@ asynchronous, multi-session interface.  It currently includes:
   header speech, logical copying, and direct table exit.
 
 Permissions and errors remain audible even when routine session speech is
-quiet.  Background completion uses Emacspeak's notification stream and names
-the session.
+quiet.  Background completion and out-of-turn availability use Emacspeak's
+notification stream and name the session.
 
 #### Agent-shell Keys
 

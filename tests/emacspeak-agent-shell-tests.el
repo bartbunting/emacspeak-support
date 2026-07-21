@@ -24,6 +24,10 @@
 (defvar emacspeak-agent-shell--pending-speech-qualified-ids)
 (defvar emacspeak-agent-shell--pending-speech-timer)
 (defvar emacspeak-agent-shell--response-turn-active-p)
+(defvar emacspeak-agent-shell--out-of-turn-bodies)
+(defvar emacspeak-agent-shell--out-of-turn-delivered-ids)
+(defvar emacspeak-agent-shell--out-of-turn-pending-ids)
+(defvar emacspeak-agent-shell--out-of-turn-speech-timer)
 (defvar emacspeak-agent-shell--tool-call-status-cache)
 (defvar emacspeak-agent-shell--tool-call-subscription)
 (defvar emacspeak-agent-shell--markdown-face-voice-map)
@@ -122,6 +126,8 @@
                   "emacspeak-agent-shell" (text))
 (declare-function emacspeak-agent-shell--record-response-section
                   "emacspeak-agent-shell" (range))
+(declare-function emacspeak-agent-shell--out-of-turn-cleanup
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--response-section-cleanup
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--response-section-setup
@@ -1051,6 +1057,136 @@ Return speech events plus the target character.  DIRECTION is `forward' or
      (emacspeak-agent-shell-test--capture-events
        (let ((emacspeak-agent-shell-speak-thought-process nil))
          (emacspeak-agent-shell--speak-content "Reasoning" 'thought))))))
+
+(ert-deftest emacspeak-agent-shell-out-of-turn-message-speaks-latest-once ()
+  "A focused out-of-turn message should speak its latest rendered body once."
+  (let ((emacspeak-agent-shell-speech-delay 0.001))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local emacspeak-agent-shell-speech-level 'response)
+      (setq-local agent-shell-section-functions
+                  '(emacspeak-agent-shell--record-response-section))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "out-of-turn"
+           :block-id "message-1-agent_message_chunk"
+           :body "Partial ")
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "out-of-turn"
+           :block-id "message-1-agent_message_chunk"
+           :body "update" :append t)
+          (sit-for 0.01))
+        '((icon item)
+          (speak "Agent update: Partial update"))))
+      (should-not emacspeak-agent-shell--out-of-turn-speech-timer)
+      (should-not emacspeak-agent-shell--out-of-turn-pending-ids)
+      (should
+       (gethash "out-of-turn-message-1-agent_message_chunk"
+                emacspeak-agent-shell--out-of-turn-delivered-ids))
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell-test--render-response-section
+          :namespace-id "out-of-turn"
+          :block-id "message-1-agent_message_chunk"
+          :body " ignored" :append t)
+         (sit-for 0.01))))))
+
+(ert-deftest emacspeak-agent-shell-out-of-turn-background-notifies-by-name ()
+  "A background out-of-turn message should identify its session, not its body."
+  (let ((buffer (generate-new-buffer "Codex Agent @ late-update"))
+        (emacspeak-agent-shell-speech-delay 0.001))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq major-mode 'agent-shell-mode)
+          (setq-local emacspeak-comint-autospeak t)
+          (setq-local emacspeak-agent-shell-speech-level 'notify)
+          (setq-local agent-shell-section-functions
+                      '(emacspeak-agent-shell--record-response-section))
+          (should
+           (equal
+            (emacspeak-agent-shell-test--capture-events
+              (cl-letf
+                  (((symbol-function
+                     'emacspeak-agent-shell--session-focused-p)
+                    (lambda (&optional _buffer) nil)))
+                (emacspeak-agent-shell-test--render-response-section
+                 :namespace-id "out-of-turn"
+                 :block-id "message-2-agent_message_chunk"
+                 :body "Private response body")
+                (sit-for 0.01)))
+            '((notify-icon item)
+              (notify
+               "Codex Agent @ late-update. Agent update available.")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest emacspeak-agent-shell-out-of-turn-respects-suppression-levels ()
+  "Notify-only focused and quiet sessions should suppress agent updates."
+  (dolist (case '((t notify) (t quiet) (nil quiet)))
+    (let ((emacspeak-agent-shell-speech-delay 0.001))
+      (with-temp-buffer
+        (setq major-mode 'agent-shell-mode)
+        (setq-local emacspeak-comint-autospeak t)
+        (setq-local emacspeak-agent-shell-speech-level (cadr case))
+        (setq-local agent-shell-section-functions
+                    '(emacspeak-agent-shell--record-response-section))
+        (should-not
+         (emacspeak-agent-shell-test--capture-events
+           (cl-letf
+               (((symbol-function
+                  'emacspeak-agent-shell--session-focused-p)
+                 (lambda (&optional _buffer) (car case))))
+             (emacspeak-agent-shell-test--render-response-section
+              :namespace-id "out-of-turn"
+              :block-id "message-3-agent_message_chunk"
+              :body "Suppressed response")
+             (sit-for 0.01))))))))
+
+(ert-deftest emacspeak-agent-shell-restored-content-stays-automatically-silent ()
+  "Inactive restored content should not be mistaken for an out-of-turn update."
+  (let ((emacspeak-agent-shell-speech-delay 0.001))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local emacspeak-agent-shell-speech-level 'full)
+      (setq-local agent-shell-section-functions
+                  '(emacspeak-agent-shell--record-response-section))
+      (should-not
+       (emacspeak-agent-shell-test--capture-events
+         (emacspeak-agent-shell-test--render-response-section
+          :namespace-id "restored-turn"
+          :block-id "message-agent_message_chunk"
+          :body "Historical answer")
+         (sit-for 0.01)))
+      (should-not emacspeak-agent-shell--out-of-turn-speech-timer)
+      (should-not emacspeak-agent-shell--out-of-turn-pending-ids)
+      (should-not emacspeak-agent-shell--out-of-turn-bodies))))
+
+(ert-deftest emacspeak-agent-shell-out-of-turn-cleanup-cancels-delivery ()
+  "Response-section cleanup should cancel queued out-of-turn speech."
+  (let ((emacspeak-agent-shell-speech-delay 60))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local agent-shell-section-functions nil)
+      (emacspeak-agent-shell--response-section-setup)
+      (emacspeak-agent-shell-test--render-response-section
+       :namespace-id "out-of-turn"
+       :block-id "message-4-agent_message_chunk"
+       :body "Queued response")
+      (should (timerp emacspeak-agent-shell--out-of-turn-speech-timer))
+      (should emacspeak-agent-shell--out-of-turn-pending-ids)
+      (emacspeak-agent-shell--response-section-cleanup)
+      (should-not
+       (memq #'emacspeak-agent-shell--record-response-section
+             agent-shell-section-functions))
+      (should-not emacspeak-agent-shell--out-of-turn-speech-timer)
+      (should-not emacspeak-agent-shell--out-of-turn-pending-ids)
+      (should-not emacspeak-agent-shell--out-of-turn-bodies)
+      (should-not emacspeak-agent-shell--out-of-turn-delivered-ids))))
 
 (ert-deftest emacspeak-agent-shell-user-message-fixture-is-semantic ()
   "A restored user-message fixture should retain its speaker identity."

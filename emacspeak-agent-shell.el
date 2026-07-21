@@ -468,6 +468,18 @@ a timer created by an older loaded version.")
 (defvar-local emacspeak-agent-shell--response-turn-active-p nil
   "Non-nil while a submitted agent turn can produce semantic sections.")
 
+(defvar-local emacspeak-agent-shell--out-of-turn-speech-timer nil
+  "Timer coalescing the latest rendered out-of-turn message updates.")
+
+(defvar-local emacspeak-agent-shell--out-of-turn-pending-ids nil
+  "Out-of-turn message IDs awaiting delivery, in arrival order.")
+
+(defvar-local emacspeak-agent-shell--out-of-turn-bodies nil
+  "Hash table of latest rendered out-of-turn bodies by qualified ID.")
+
+(defvar-local emacspeak-agent-shell--out-of-turn-delivered-ids nil
+  "Hash table of out-of-turn qualified IDs already delivered once.")
+
 (defvar-local emacspeak-agent-shell--permission-subscription nil
   "Subscription token for permission request events in this shell.")
 
@@ -499,9 +511,9 @@ a timer created by an older loaded version.")
   "Non-nil when agent-shell speech-level keys are active.")
 
 (defcustom emacspeak-agent-shell-speech-delay 0.5
-  "Legacy delay retained for configuration compatibility.
-Response completion now follows agent-shell's public `turn-complete' event,
-so this value no longer determines when a response is spoken."
+  "Delay used to coalesce streamed out-of-turn agent messages.
+Normal response completion follows agent-shell's public `turn-complete' event,
+so this value never determines when a submitted turn is spoken."
   :type 'number
   :group 'emacspeak-agent-shell)
 
@@ -978,22 +990,123 @@ the body retains semantic faces and omits markup that is no longer displayed."
               ((not (string-empty-p body))))
     (cons qualified-id body)))
 
-(defun emacspeak-agent-shell--record-response-section (range)
-  "Record the latest rendered turn content represented by section RANGE."
-  (when emacspeak-agent-shell--response-turn-active-p
-    (when-let* ((snapshot
-                 (emacspeak-agent-shell--response-section-snapshot range))
-                (qualified-id (car snapshot))
-                (body (cdr snapshot)))
-      (unless (hash-table-p emacspeak-agent-shell--pending-bodies)
-        (setq emacspeak-agent-shell--pending-bodies
+(defun emacspeak-agent-shell--out-of-turn-message-id-p (qualified-id)
+  "Return non-nil when QUALIFIED-ID is an explicit out-of-turn agent message."
+  (and (stringp qualified-id)
+       (string-prefix-p "out-of-turn-" qualified-id)
+       (string-suffix-p "agent_message_chunk" qualified-id)))
+
+(defun emacspeak-agent-shell--deliver-out-of-turn-body (body)
+  "Deliver rendered out-of-turn agent message BODY according to focus policy."
+  (cl-declare (special emacspeak-comint-autospeak))
+  (when (bound-and-true-p emacspeak-comint-autospeak)
+    (let ((focused (emacspeak-agent-shell--session-focused-p)))
+      (cond
+       ((and focused
+             (emacspeak-agent-shell--speech-level-at-least-p 'response))
+        (emacspeak-icon 'item)
+        (dtk-speak (concat "Agent update: " body)))
+       ((and (not focused)
+             (emacspeak-agent-shell--speech-level-at-least-p 'notify))
+        (dtk-notify-icon 'item)
+        (dtk-notify
+         (format "%s. Agent update available."
+                 (emacspeak-agent-shell--session-label))))))))
+
+(defun emacspeak-agent-shell--deliver-out-of-turn-pending (buffer)
+  "Deliver and clear coalesced out-of-turn messages for live BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq emacspeak-agent-shell--out-of-turn-speech-timer nil)
+      (let ((qualified-ids emacspeak-agent-shell--out-of-turn-pending-ids))
+        (setq emacspeak-agent-shell--out-of-turn-pending-ids nil)
+        (unless (hash-table-p
+                 emacspeak-agent-shell--out-of-turn-delivered-ids)
+          (setq emacspeak-agent-shell--out-of-turn-delivered-ids
+                (make-hash-table :test #'equal)))
+        (dolist (qualified-id qualified-ids)
+          (unless (gethash
+                   qualified-id
+                   emacspeak-agent-shell--out-of-turn-delivered-ids)
+            (when-let* ((body
+                         (and
+                          (hash-table-p
+                           emacspeak-agent-shell--out-of-turn-bodies)
+                          (gethash
+                           qualified-id
+                           emacspeak-agent-shell--out-of-turn-bodies))))
+              (puthash
+               qualified-id t
+               emacspeak-agent-shell--out-of-turn-delivered-ids)
+              (emacspeak-agent-shell--deliver-out-of-turn-body body)))
+          (when (hash-table-p emacspeak-agent-shell--out-of-turn-bodies)
+            (remhash qualified-id
+                     emacspeak-agent-shell--out-of-turn-bodies)))))))
+
+(defun emacspeak-agent-shell--record-out-of-turn-snapshot (snapshot)
+  "Coalesce the latest rendered out-of-turn message SNAPSHOT for speech."
+  (let ((qualified-id (car snapshot))
+        (body (cdr snapshot)))
+    (unless (and (hash-table-p
+                  emacspeak-agent-shell--out-of-turn-delivered-ids)
+                 (gethash
+                  qualified-id
+                  emacspeak-agent-shell--out-of-turn-delivered-ids))
+      (unless (hash-table-p emacspeak-agent-shell--out-of-turn-bodies)
+        (setq emacspeak-agent-shell--out-of-turn-bodies
               (make-hash-table :test #'equal)))
-      (puthash qualified-id body emacspeak-agent-shell--pending-bodies)
+      (puthash qualified-id body
+               emacspeak-agent-shell--out-of-turn-bodies)
       (unless (member qualified-id
-                      emacspeak-agent-shell--pending-speech-qualified-ids)
-        (setq emacspeak-agent-shell--pending-speech-qualified-ids
-              (append emacspeak-agent-shell--pending-speech-qualified-ids
-                      (list qualified-id)))))))
+                      emacspeak-agent-shell--out-of-turn-pending-ids)
+        (setq emacspeak-agent-shell--out-of-turn-pending-ids
+              (append emacspeak-agent-shell--out-of-turn-pending-ids
+                      (list qualified-id))))
+      (when (timerp emacspeak-agent-shell--out-of-turn-speech-timer)
+        (cancel-timer emacspeak-agent-shell--out-of-turn-speech-timer))
+      (setq emacspeak-agent-shell--out-of-turn-speech-timer
+            (run-with-timer
+             (max 0 emacspeak-agent-shell-speech-delay) nil
+             #'emacspeak-agent-shell--deliver-out-of-turn-pending
+             (current-buffer))))))
+
+(defun emacspeak-agent-shell--record-response-section (range)
+  "Record semantic turn content or an explicit out-of-turn message in RANGE."
+  (when-let* ((body-start (map-nested-elt range '(:body :start)))
+              ((< body-start (point-max)))
+              (state
+               (get-text-property body-start 'agent-shell-ui-state))
+              (qualified-id (map-elt state :qualified-id))
+              ((or emacspeak-agent-shell--response-turn-active-p
+                   (emacspeak-agent-shell--out-of-turn-message-id-p
+                    qualified-id)))
+              (snapshot
+               (emacspeak-agent-shell--response-section-snapshot range)))
+    (if (emacspeak-agent-shell--out-of-turn-message-id-p qualified-id)
+        (emacspeak-agent-shell--record-out-of-turn-snapshot snapshot)
+      (let ((body (cdr snapshot)))
+        (unless (hash-table-p emacspeak-agent-shell--pending-bodies)
+          (setq emacspeak-agent-shell--pending-bodies
+                (make-hash-table :test #'equal)))
+        (puthash qualified-id body emacspeak-agent-shell--pending-bodies)
+        (unless (member qualified-id
+                        emacspeak-agent-shell--pending-speech-qualified-ids)
+          (setq emacspeak-agent-shell--pending-speech-qualified-ids
+                (append emacspeak-agent-shell--pending-speech-qualified-ids
+                        (list qualified-id))))))))
+
+(defun emacspeak-agent-shell--out-of-turn-cleanup ()
+  "Cancel and clear out-of-turn speech state in the current shell."
+  (when (timerp emacspeak-agent-shell--out-of-turn-speech-timer)
+    (cancel-timer emacspeak-agent-shell--out-of-turn-speech-timer))
+  (setq emacspeak-agent-shell--out-of-turn-speech-timer nil
+        emacspeak-agent-shell--out-of-turn-pending-ids nil)
+  (when (hash-table-p emacspeak-agent-shell--out-of-turn-bodies)
+    (clrhash emacspeak-agent-shell--out-of-turn-bodies))
+  (when (hash-table-p emacspeak-agent-shell--out-of-turn-delivered-ids)
+    (clrhash emacspeak-agent-shell--out-of-turn-delivered-ids))
+  (setq emacspeak-agent-shell--out-of-turn-bodies nil
+        emacspeak-agent-shell--out-of-turn-delivered-ids nil))
 
 (defun emacspeak-agent-shell--response-section-setup ()
   "Install semantic rendered turn-content capture in the current shell."
@@ -1015,7 +1128,8 @@ the body retains semantic faces and omits markup that is no longer displayed."
   "Remove semantic rendered turn-content capture from the current shell."
   (remove-hook 'agent-shell-section-functions
                #'emacspeak-agent-shell--record-response-section t)
-  (setq emacspeak-agent-shell--response-turn-active-p nil))
+  (setq emacspeak-agent-shell--response-turn-active-p nil)
+  (emacspeak-agent-shell--out-of-turn-cleanup))
 
 (defun emacspeak-agent-shell--begin-response-turn ()
   "Start collecting rendered turn content for a newly submitted turn."

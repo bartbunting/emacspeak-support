@@ -44,6 +44,11 @@ Completed so far:
   the configured speech policy once at public turn completion; network pauses
   no longer imply completion, and the private fragment-update advice is
   removed;
+- explicit out-of-turn agent messages are coalesced by qualified ID and
+  delivered once after rendering: focused response/full sessions hear the
+  latest body, background notify/response/full sessions hear a named
+  content-free availability notice, and quiet sessions and restored history
+  remain silent;
 - current viewport compose submission and accepted-cancellation feedback,
   distinguishing immediate submission from queueing, continued composition,
   and compose-window dismissal while suppressing false success and
@@ -170,8 +175,8 @@ use `emacspeak-agent-shell-foreground-speech-level`; other sessions use
 `emacspeak-agent-shell-background-speech-level`.  The levels are:
 
 - `full` for configured response, thought, plan, tool, and lifecycle feedback;
-- `response` for agent responses and turn completion;
-- `notify` for turn completion only; and
+- `response` for agent responses, out-of-turn updates, and turn completion;
+- `notify` for turn completion and background out-of-turn availability; and
 - `quiet` for no routine feedback.
 
 Permissions and errors remain audible at every routine level.  Background
@@ -183,7 +188,7 @@ session selector controls the backing shell from viewport mode.  Selecting
 `emacspeak-agent-shell-cycle-speech-level` command remains available through
 `M-x` for users who prefer repeated cycling.
 
-### Turn Content and Response Completion
+### Turn Content, Response Completion, and Out-of-Turn Updates
 
 Only response, thought, and plan sections rendered during an active submitted
 turn are collected.  Each update replaces the stored snapshot for its real
@@ -197,11 +202,21 @@ events discard partial turn content before their semantic outcome
 announcement.  Permission prompts interrupt speech without discarding the
 current snapshots.
 
-`emacspeak-agent-shell-speech-delay` remains defined for configuration
-compatibility but no longer determines completion.  Reloading support removes
-the former `agent-shell--update-fragment` advice, cancels any timer left by the
-older implementation, and installs the section collector in already enabled
-shell buffers without requiring a session restart.
+Agent-shell gives messages received without an active request the explicit
+`out-of-turn` namespace.  Those messages have no public completion event, so
+their repeated rendered updates are coalesced for
+`emacspeak-agent-shell-speech-delay` seconds and the latest body is delivered
+once.  A focused response/full session hears `Agent update` followed by the
+body.  A background notify/response/full session receives a named notification
+that an update is available without reading its content; focused notify and
+all quiet sessions remain silent.  IDs already delivered are suppressed for
+the lifetime of the shell buffer.  Restored history is not in the explicit
+namespace and remains automatically silent.
+
+The delay never determines completion for a submitted turn.  Reloading support
+removes the former `agent-shell--update-fragment` advice, cancels any timer left
+by the older implementation, and installs the section collector in already
+enabled shell buffers without requiring a session restart.
 
 ## Findings
 
@@ -235,8 +250,9 @@ in Implementation Progress above.
   compatibility dependency remains isolated and covered by rendered-range and
   qualified-ID tests.
 - Restored history renders outside an active submitted turn and is
-  intentionally excluded from automatic response speech; it remains available
-  through transcript navigation.
+  intentionally excluded from automatic response speech; only agent messages
+  with agent-shell's explicit `out-of-turn` namespace bypass the active-turn
+  gate.  History remains available through transcript navigation.
 - Reload migration explicitly removes the old fragment advice and cancels its
   timers; enable/disable and buffer teardown manage the replacement hook and
   all buffer-local response state.
@@ -320,11 +336,12 @@ to both existing and newly created shell buffers.
   warning cue, speak the tool/request summary, then speak numbered choices and
   the current choice.  Moving between buttons speaks choice text, position,
   and action.
-- Normal streaming is accumulated by qualified semantic fragment ID and each
-  update replaces that fragment's stored body.  Speak the ordered rendered
-  content only at public turn completion.  No quiet timer is used as proof of
-  completion; the delay option and timer path remain only for reload
-  compatibility with older loaded versions.
+- Normal submitted-turn streaming is accumulated by qualified semantic
+  fragment ID and each update replaces that fragment's stored body.  Speak the
+  ordered rendered content only at public turn completion; no quiet timer is
+  used as proof of that completion.  Explicit out-of-turn agent messages lack
+  a completion event, so they use the delay only to coalesce repeated renders
+  of the same qualified ID before one focus-aware delivery.
 - Announce tool transitions only when status changes.  Include a short title
   and distinct pending/running/succeeded/failed cues; observe the configured
   output verbosity for the body.
@@ -392,17 +409,21 @@ item.
 - Introduce the section-range compatibility adapter.
 - Track complete qualified IDs rather than parsing IDs heuristically.
 - Extract rendered semantic body text and handle unknown content safely.
-- Flush pending content on public semantic completion; retain the former timer
-  only as a reload and teardown compatibility path for older loaded versions.
+- Flush submitted-turn content on public semantic completion; reserve delayed
+  coalescing for explicit out-of-turn agent messages and reload cleanup for
+  timers from older loaded versions.
 - Add concise-summary, full-body, and repeat-last-response commands.
 - Define foreground/background and thought/plan policies.
 
 Exit criterion: chunk boundaries and network pauses do not create duplicate or
-truncated speech, and restored user messages and unknown blocks remain usable.
+truncated speech, out-of-turn updates are delivered once without making
+restored history chatty, and restored user messages and unknown blocks remain
+usable.
 
-Status: the semantic boundary, response/thought/plan capture,
-foreground/background policy, and typed fragment navigation are complete.
-Explicit summary, full-response, and repeat-last-response commands remain.
+Status: the semantic boundary, response/thought/plan capture, one-time
+out-of-turn delivery, foreground/background policy, and typed fragment
+navigation are complete.  Explicit summary, full-response, and
+repeat-last-response commands remain.
 
 ### Phase 3: Navigation, Voices, and Viewport
 
