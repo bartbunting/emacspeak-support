@@ -58,6 +58,7 @@
 (defvar agent-shell-mode-map)
 (defvar agent-shell-show-context-usage-indicator)
 (defvar agent-shell-show-session-id)
+(defvar agent-shell-viewport-dismiss-on-send)
 (defvar agent-shell-viewport--position-cache)
 (defvar agent-shell-viewport-edit-mode-map)
 (defvar agent-shell-viewport-edit-mode-hook)
@@ -171,6 +172,11 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--table-between
                   "emacspeak-agent-shell" (origin destination direction))
+(declare-function emacspeak-agent-shell--viewport-submit-announcement
+                  "emacspeak-agent-shell"
+                  (disposition keep-composing dismiss))
+(declare-function emacspeak-agent-shell--viewport-submit-disposition
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-disable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-enable "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell-speech-setup
@@ -3357,8 +3363,34 @@ Return speech events plus the target character.  DIRECTION is `forward' or
   (should-not
    (ad-find-advice 'agent-shell--update-fragment 'around 'emacspeak)))
 
+(ert-deftest emacspeak-agent-shell-viewport-submit-uses-public-status ()
+  "Pre-send public status should determine queued and submitted feedback."
+  (let (status)
+    (cl-letf (((symbol-function 'emacspeak-agent-shell--session-buffer)
+               (lambda (&optional _) (current-buffer)))
+              ((symbol-function 'agent-shell-status)
+               (lambda (&rest arguments)
+                 (should (eq (plist-get arguments :shell-buffer)
+                             (current-buffer)))
+                 status)))
+      (dolist (case '((ready submitted)
+                      (busy queued)
+                      (blocked queued)
+                      (unknown nil)))
+        (setq status (car case))
+        (should
+         (eq (emacspeak-agent-shell--viewport-submit-disposition)
+             (cadr case))))))
+  (cl-letf (((symbol-function 'emacspeak-agent-shell--session-buffer)
+             (lambda (&optional _) (user-error "No session"))))
+    (should-not (emacspeak-agent-shell--viewport-submit-disposition)))
+  (should
+   (equal
+    (emacspeak-agent-shell--viewport-submit-announcement nil t nil)
+    "Prompt sent. Continue composing.")))
+
 (ert-deftest emacspeak-agent-shell-viewport-submit-announces-success ()
-  "A successful interactive viewport submission should be confirmed."
+  "A ready session should report immediate viewport submission."
   (let ((agent-shell-prefer-viewport-interaction t)
         (agent-shell-session-strategy 'new-deferred)
         sent)
@@ -3366,7 +3398,10 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (setq major-mode 'agent-shell-viewport-edit-mode)
       (cl-letf (((symbol-function
                   'agent-shell-viewport-compose-send-and-wait-for-response)
-                 (lambda () (setq sent t))))
+                 (lambda () (setq sent t)))
+                ((symbol-function
+                  'emacspeak-agent-shell--viewport-submit-disposition)
+                 (lambda () 'submitted)))
         (should
          (equal
           (emacspeak-agent-shell-test--capture-events
@@ -3374,6 +3409,71 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           '((icon close-object)
             (speak "Prompt submitted."))))
         (should sent)))))
+
+(ert-deftest emacspeak-agent-shell-viewport-submit-announces-queueing ()
+  "A busy session should report that its viewport prompt was queued."
+  (let ((agent-shell-prefer-viewport-interaction t)
+        (agent-shell-session-strategy 'new-deferred)
+        sent)
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-viewport-edit-mode)
+      (cl-letf (((symbol-function
+                  'agent-shell-viewport-compose-send-and-wait-for-response)
+                 (lambda () (setq sent t)))
+                ((symbol-function
+                  'emacspeak-agent-shell--viewport-submit-disposition)
+                 (lambda () 'queued)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'agent-shell-viewport-compose-send))
+          '((icon close-object)
+            (speak "Prompt queued."))))
+        (should sent)))))
+
+(ert-deftest emacspeak-agent-shell-viewport-submit-announces-continued-compose ()
+  "A prefix submission should say that composition remains available."
+  (let ((agent-shell-session-strategy 'new-deferred)
+        (agent-shell-viewport-dismiss-on-send t)
+        queued)
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-viewport-edit-mode)
+      (cl-letf (((symbol-function 'agent-shell-viewport--compose-queue)
+                 (lambda () (setq queued t)))
+                ((symbol-function
+                  'emacspeak-agent-shell--viewport-submit-disposition)
+                 (lambda () 'queued)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (let ((current-prefix-arg '(4)))
+              (call-interactively #'agent-shell-viewport-compose-send)))
+          '((icon task-done)
+            (speak "Prompt queued. Continue composing."))))
+        (should queued)
+        (should (eq major-mode 'agent-shell-viewport-edit-mode))))))
+
+(ert-deftest emacspeak-agent-shell-viewport-submit-announces-dismissal ()
+  "A fire-and-forget submission should report compose-window dismissal."
+  (let ((agent-shell-session-strategy 'new-deferred)
+        (agent-shell-viewport-dismiss-on-send t)
+        dismissed)
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-viewport-edit-mode)
+      (cl-letf (((symbol-function
+                  'agent-shell-viewport-compose-send-and-dismiss)
+                 (lambda () (setq dismissed t)))
+                ((symbol-function
+                  'emacspeak-agent-shell--viewport-submit-disposition)
+                 (lambda () 'submitted)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (call-interactively #'agent-shell-viewport-compose-send))
+          '((icon close-object)
+            (speak
+             "Prompt submitted. Compose window dismissed."))))
+        (should dismissed)))))
 
 (ert-deftest emacspeak-agent-shell-viewport-submit-does-not-confirm-error ()
   "A failed viewport submission should not produce a success cue."
@@ -3383,7 +3483,10 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (setq major-mode 'agent-shell-viewport-edit-mode)
       (cl-letf (((symbol-function
                   'agent-shell-viewport-compose-send-and-wait-for-response)
-                 (lambda () (user-error "Nothing to send"))))
+                 (lambda () (user-error "Nothing to send")))
+                ((symbol-function
+                  'emacspeak-agent-shell--viewport-submit-disposition)
+                 (lambda () 'submitted)))
         (should-not
          (emacspeak-agent-shell-test--capture-events
            (should-error

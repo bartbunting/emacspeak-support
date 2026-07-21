@@ -45,7 +45,9 @@ Completed so far:
   no longer imply completion, and the private fragment-update advice is
   removed;
 - current viewport compose submission and accepted-cancellation feedback,
-  including suppression of false success and declined-cancellation cues;
+  distinguishing immediate submission from queueing, continued composition,
+  and compose-window dismissal while suppressing false success and
+  declined-cancellation cues;
 - preservation of agent-shell's text and graphical headers, with concise
   semantic focus speech for otherwise silent SVG headers and a full-state
   reading through Emacspeak's standard `C-e m` mode-line command;
@@ -239,8 +241,11 @@ in Implementation Progress above.
   timers; enable/disable and buffer teardown manage the replacement hook and
   all buffer-local response state.
 - Viewport submission advice had drifted from the removed
-  `agent-shell-viewport-submit`; it now targets the current compose command and
-  remains covered by the advice-target compatibility test.
+  `agent-shell-viewport-submit`; it now targets the current compose command,
+  samples the public pre-send session status to distinguish queueing from
+  immediate submission, and reports prefix-driven continued composition or
+  configured dismissal.  Errors still produce no success cue, and the former
+  zero-argument command remains compatible.
 - Agent-shell's current core and Markdown faces now have explicit voice
   mappings because Emacspeak's exact-symbol mapping does not inherit them from
   visual parent faces.  Inventory tests detect newly added upstream faces.

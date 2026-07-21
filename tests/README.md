@@ -23,8 +23,8 @@ The suite covers semantic turn-content boundaries and response/thought/plan
 policy, lifecycle and permission events, tool updates, foreground/background
 policy, headers and voices, status semantics, typed transcript and source
 navigation, current and legacy activity groups, Markdown table interaction,
-upstream API/face drift, and teardown.  All checked-in tests are normal
-regression tests and are expected to pass.
+viewport submission outcomes, upstream API/face drift, and teardown.  All
+checked-in tests are normal regression tests and are expected to pass.
 
 For end-to-end speech-server logging and manual-listening methodology, see
 [../AGENTS.md](../AGENTS.md).  The audited external revisions are recorded in

@@ -111,6 +111,8 @@ asynchronous, multi-session interface.  It currently includes:
   completion;
 - distinct permission, lifecycle, error, and tool-status feedback;
 - focus-aware foreground and background speech levels;
+- viewport submission feedback that distinguishes submitted and queued prompts,
+  continued composition, and compose-window dismissal;
 - a concise spoken graphical header on focus and full session-state speech
   through Emacspeak's standard `C-e m` command;
 - voices for current agent-shell interface and rendered Markdown faces;
@@ -144,6 +146,11 @@ These keys are installed in agent-shell shell and viewport buffers:
 Bare brackets retain normal insertion at the live prompt and in a viewport
 compose buffer.  Block-type completion is case-insensitive; pressing the same
 bracket again with an empty selector accepts its default.
+
+In a viewport compose buffer, `C-c C-c` announces whether the prompt was
+submitted immediately or queued.  With `C-u C-c C-c`, it also confirms that
+the cleared editor remains ready for another prompt.  When
+`agent-shell-viewport-dismiss-on-send` is enabled, dismissal is announced.
 
 While point is in a rendered Markdown table:
 

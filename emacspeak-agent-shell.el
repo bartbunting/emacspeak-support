@@ -3350,11 +3350,58 @@ the corresponding buffer boundary."
     (emacspeak-icon 'task-done)
     (message "Viewport refreshed")))
 
-(defadvice agent-shell-viewport-compose-send (after emacspeak pre act comp)
-  "Announce prompt submission."
-  (when (ems-interactive-p)
-    (emacspeak-icon 'close-object)
-    (dtk-speak "Prompt submitted.")))
+(defun emacspeak-agent-shell--viewport-submit-disposition ()
+  "Return how a viewport prompt will be handled, or nil when unknown.
+The public session status is sampled before submission because a successful
+direct submission immediately changes it to busy."
+  (condition-case nil
+      (when-let* ((shell-buffer (emacspeak-agent-shell--session-buffer)))
+        (pcase (agent-shell-status :shell-buffer shell-buffer)
+          ((or 'busy 'blocked) 'queued)
+          ('ready 'submitted)))
+    (error nil)))
+
+(defun emacspeak-agent-shell--viewport-submit-announcement
+    (disposition keep-composing dismiss)
+  "Describe viewport submission DISPOSITION and its composition outcome.
+KEEP-COMPOSING means the cleared editor remains ready for another prompt.
+DISMISS means the compose window is dismissed."
+  (concat
+   (pcase disposition
+     ('queued "Prompt queued.")
+     ('submitted "Prompt submitted.")
+     (_ "Prompt sent."))
+   (cond
+    (keep-composing " Continue composing.")
+    (dismiss " Compose window dismissed.")
+    (t ""))))
+
+;; Replace the success-only after advice when reloading an older support file.
+(when (ad-find-advice
+       'agent-shell-viewport-compose-send 'after 'emacspeak)
+  (ad-remove-advice
+   'agent-shell-viewport-compose-send 'after 'emacspeak)
+  (ad-activate 'agent-shell-viewport-compose-send))
+
+(defadvice agent-shell-viewport-compose-send (around emacspeak pre act comp)
+  "Announce whether a prompt was submitted or queued and where focus remains."
+  (let* ((interactive-p (ems-interactive-p))
+         (keep-composing
+          (and interactive-p (ignore-errors (ad-get-arg 0))))
+         (dismiss
+          (and interactive-p
+               (not keep-composing)
+               (boundp 'agent-shell-viewport-dismiss-on-send)
+               agent-shell-viewport-dismiss-on-send))
+         (disposition
+          (and interactive-p
+               (emacspeak-agent-shell--viewport-submit-disposition))))
+    ad-do-it
+    (when interactive-p
+      (emacspeak-icon (if keep-composing 'task-done 'close-object))
+      (dtk-speak
+       (emacspeak-agent-shell--viewport-submit-announcement
+        disposition keep-composing dismiss)))))
 
 (defadvice agent-shell-viewport-compose-cancel (around emacspeak pre act comp)
   "Announce an accepted prompt composition cancellation."
@@ -3574,11 +3621,20 @@ the corresponding buffer boundary."
     (agent-shell-viewport-previous-item around)
     (agent-shell-prompt-compose after)
     (agent-shell-viewport-refresh after)
-    (agent-shell-viewport-compose-send after)
+    (agent-shell-viewport-compose-send around)
     (agent-shell-viewport-compose-cancel around)
     (agent-shell-viewport-view-mode after)
     (agent-shell-viewport-edit-mode after))
   "List of advised functions for Emacspeak agent-shell support.")
+
+;; `defvar' preserves the old entry across reloads; update it in place so
+;; enable and disable operate on the new around advice in a live session.
+(if-let* ((entry
+           (assq 'agent-shell-viewport-compose-send
+                 emacspeak-agent-shell--advice-list)))
+    (setcdr entry '(around))
+  (push '(agent-shell-viewport-compose-send around)
+        emacspeak-agent-shell--advice-list))
 
 (defun emacspeak-agent-shell-enable ()
   "Enable Emacspeak support for agent-shell."
