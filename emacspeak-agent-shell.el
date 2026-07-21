@@ -1339,19 +1339,41 @@ Provide an auditory icon if possible."
   (or (car (rassq type emacspeak-agent-shell--block-type-choices))
       "Other"))
 
-(defun emacspeak-agent-shell--read-block-type ()
-  "Read and remember a semantic agent-shell block type."
+(defun emacspeak-agent-shell--accept-block-type-default ()
+  "Accept the default block type when the minibuffer is empty.
+Otherwise insert the invoking character normally."
+  (interactive)
+  (if (string-empty-p (minibuffer-contents-no-properties))
+      (exit-minibuffer)
+    (self-insert-command 1)))
+
+(defun emacspeak-agent-shell--block-type-minibuffer-setup (accept-key)
+  "Bind ACCEPT-KEY to accept an empty block-type minibuffer."
+  (when accept-key
+    (use-local-map (copy-keymap (current-local-map)))
+    (local-set-key (kbd accept-key)
+                   #'emacspeak-agent-shell--accept-block-type-default)))
+
+(defun emacspeak-agent-shell--read-block-type (&optional accept-key)
+  "Read and remember a semantic agent-shell block type.
+When ACCEPT-KEY is non-nil, let it accept the default on empty input."
   (let* ((default
           (emacspeak-agent-shell--block-type-label
            emacspeak-agent-shell--block-navigation-type))
          (selection
-          (completing-read
-           (format-prompt "Block type" default)
-           (mapcar #'car emacspeak-agent-shell--block-type-choices)
-           nil t nil nil default)))
+          (minibuffer-with-setup-hook
+              (lambda ()
+                (emacspeak-agent-shell--block-type-minibuffer-setup
+                 accept-key))
+            (let ((completion-ignore-case t))
+              (completing-read
+               (format-prompt "Block type" default)
+               (mapcar #'car emacspeak-agent-shell--block-type-choices)
+               nil t nil nil default)))))
     (setq emacspeak-agent-shell--block-navigation-type
-          (alist-get selection emacspeak-agent-shell--block-type-choices
-                    nil nil #'string=))))
+          (cdr
+           (assoc-string
+            selection emacspeak-agent-shell--block-type-choices t)))))
 
 (defun emacspeak-agent-shell--semantic-block-type (qualified-id state)
   "Classify QUALIFIED-ID and fragment STATE for navigation.
@@ -2200,8 +2222,11 @@ Rendered tables and source blocks win ties with enclosing transcript blocks."
           (when (emacspeak-agent-shell--jump-block-of-type
                  type direction (plist-get location :position))
             (emacspeak-agent-shell--activate-block-repeat-map)))
-      (emacspeak-icon 'warn-user)
-      (dtk-speak "No semantic block at point."))))
+      (emacspeak-agent-shell--select-and-jump-block
+       direction
+       (pcase (cons direction last-command-event)
+         (`(forward . ,?\]) "]")
+         (`(backward . ,?\[) "["))))))
 
 (defvar emacspeak-agent-shell--block-repeat-map
   (make-sparse-keymap)
@@ -2220,19 +2245,23 @@ Rendered tables and source blocks win ties with enclosing transcript blocks."
   "Activate temporary bracket bindings for semantic block repetition."
   (set-transient-map emacspeak-agent-shell--block-repeat-map t))
 
+(defun emacspeak-agent-shell--select-and-jump-block
+    (direction &optional accept-key)
+  "Select a block type and move in DIRECTION.
+When ACCEPT-KEY is non-nil, let it accept the selector's default."
+  (when (emacspeak-agent-shell--jump-block-of-type
+         (emacspeak-agent-shell--read-block-type accept-key) direction)
+    (emacspeak-agent-shell--activate-block-repeat-map)))
+
 (defun emacspeak-agent-shell-next-block-of-type ()
   "Select a semantic block type and move to its next occurrence."
   (interactive)
-  (when (emacspeak-agent-shell--jump-block-of-type
-         (emacspeak-agent-shell--read-block-type) 'forward)
-    (emacspeak-agent-shell--activate-block-repeat-map)))
+  (emacspeak-agent-shell--select-and-jump-block 'forward))
 
 (defun emacspeak-agent-shell-previous-block-of-type ()
   "Select a semantic block type and move to its previous occurrence."
   (interactive)
-  (when (emacspeak-agent-shell--jump-block-of-type
-         (emacspeak-agent-shell--read-block-type) 'backward)
-    (emacspeak-agent-shell--activate-block-repeat-map)))
+  (emacspeak-agent-shell--select-and-jump-block 'backward))
 
 (defun emacspeak-agent-shell-next-block-at-point ()
   "Move to the next block matching the semantic block at point.

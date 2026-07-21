@@ -16,6 +16,10 @@ for the current agent-shell interaction model.  The audit compared:
 - Emacs 30.2 for static and replay checks.  Final compatibility checks must
   also use the repository's documented minimum of Emacs 31.
 
+The semantic-navigation interaction was rechecked on 2026-07-21 against
+agent-shell `v0.62.1-15-g8a6ea7a`, Emacspeak
+`60.0-498-g7905520fd`, and Emacs 30.2.
+
 The external agent-shell and Emacspeak worktrees were inspected read-only.
 The existing integration already provides useful automatic response speech,
 thought and tool-output verbosity settings, basic navigation feedback,
@@ -102,7 +106,11 @@ When no repeat map is active, bare `]` and `[` infer the innermost semantic
 block at point, then move to the next or previous block of that type.  A table
 nested in a response is treated as a table, and a fenced block is treated as
 source.  At the live shell prompt and in the viewport compose buffer, these
-keys continue to insert literal brackets.
+keys continue to insert literal brackets.  At unclassified transcript text,
+the bare bracket opens the same case-insensitive block-type selector as its
+`C-c` counterpart.  Pressing that bracket again while the selector is empty
+accepts the previous block type as the default; once text has been entered,
+the bracket inserts normally.
 
 Agent-shell currently exposes generic next/previous block navigation but no
 public semantic block-type field.  The compatibility adapter therefore infers

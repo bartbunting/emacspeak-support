@@ -71,6 +71,10 @@
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--block-location-at-point
                   "emacspeak-agent-shell" (&optional position))
+(declare-function emacspeak-agent-shell--block-type-minibuffer-setup
+                  "emacspeak-agent-shell" (accept-key))
+(declare-function emacspeak-agent-shell--accept-block-type-default
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--source-block-locations
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--source-block-summary
@@ -2113,7 +2117,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
        (equal
         (emacspeak-agent-shell-test--capture-events
           (cl-letf (((symbol-function 'completing-read)
-                     (lambda (&rest _) "Plan"))
+                     (lambda (&rest _)
+                       (should completion-ignore-case)
+                       "plan"))
                     ((symbol-function 'set-transient-map)
                      (lambda (map &rest _)
                        (setq activated-map map))))
@@ -2130,6 +2136,37 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (should
        (eq (lookup-key activated-map (kbd "["))
            #'emacspeak-agent-shell-repeat-previous-block)))))
+
+(ert-deftest emacspeak-agent-shell-block-selector-bracket-accepts-default ()
+  "The invoking bracket should accept only an empty selector minibuffer."
+  (let ((base-map (make-sparse-keymap)))
+    (with-temp-buffer
+      (use-local-map base-map)
+      (emacspeak-agent-shell--block-type-minibuffer-setup "]")
+      (should-not (eq (current-local-map) base-map))
+      (should
+       (eq (lookup-key (current-local-map) (kbd "]"))
+           #'emacspeak-agent-shell--accept-block-type-default))
+      (should-not (lookup-key base-map (kbd "]")))))
+  (let (action)
+    (cl-letf (((symbol-function 'minibuffer-contents-no-properties)
+               (lambda () ""))
+              ((symbol-function 'exit-minibuffer)
+               (lambda () (setq action 'accept)))
+              ((symbol-function 'self-insert-command)
+               (lambda (&optional _count) (setq action 'insert))))
+      (emacspeak-agent-shell--accept-block-type-default))
+    (should (eq action 'accept)))
+  (let ((last-command-event ?\]) action)
+    (cl-letf (((symbol-function 'minibuffer-contents-no-properties)
+               (lambda () "p"))
+              ((symbol-function 'exit-minibuffer)
+               (lambda () (setq action 'accept)))
+              ((symbol-function 'self-insert-command)
+               (lambda (&optional count)
+                 (setq action (list 'insert count last-command-event)))))
+      (emacspeak-agent-shell--accept-block-type-default))
+    (should (equal action `(insert 1 ,?\])))))
 
 (ert-deftest emacspeak-agent-shell-context-navigation-infers-current-type ()
   "Bare brackets should infer and skip the semantic block containing point."
@@ -2385,19 +2422,44 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest emacspeak-agent-shell-context-navigation-rejects-plain-text ()
-  "Contextual navigation should briefly identify unclassified transcript text."
-  (with-temp-buffer
-    (insert "Unclassified preamble")
-    (setq major-mode 'agent-shell-viewport-view-mode)
-    (goto-char (+ (point-min) 3))
-    (let ((last-command-event nil))
+(ert-deftest emacspeak-agent-shell-context-navigation-selects-at-plain-text ()
+  "Contextual navigation should select a type at unclassified transcript text."
+  (let ((emacspeak-agent-shell--block-navigation-type 'plan)
+        (minibuffer-setup-hook nil)
+        activated-map accept-command default-value)
+    (emacspeak-agent-shell-test--with-semantic-blocks
+      (setq major-mode 'agent-shell-viewport-view-mode)
+      (goto-char (point-min))
+      (should-not (emacspeak-agent-shell--block-location-at-point))
+      (let ((last-command-event ?\]))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (cl-letf
+                (((symbol-function 'completing-read)
+                  (lambda (&rest arguments)
+                    (should completion-ignore-case)
+                    (setq default-value (nth 6 arguments))
+                    (with-temp-buffer
+                      (use-local-map (make-sparse-keymap))
+                      (funcall (car minibuffer-setup-hook))
+                      (setq accept-command
+                            (lookup-key (current-local-map) (kbd "]"))))
+                    "plan"))
+                 ((symbol-function 'set-transient-map)
+                  (lambda (map &rest _)
+                    (setq activated-map map))))
+              (emacspeak-agent-shell-next-block-at-point)))
+          '((stop nil)
+            (icon large-movement)
+            (speak "Plan. One step")))))
+      (should (equal default-value "Plan"))
       (should
-       (equal
-        (emacspeak-agent-shell-test--capture-events
-          (emacspeak-agent-shell-next-block-at-point))
-        '((icon warn-user)
-          (speak "No semantic block at point.")))))))
+       (eq accept-command
+           #'emacspeak-agent-shell--accept-block-type-default))
+      (should (eq emacspeak-agent-shell--block-navigation-type 'plan))
+      (should
+       (eq activated-map emacspeak-agent-shell--block-repeat-map)))))
 
 (ert-deftest emacspeak-agent-shell-block-navigation-has-viewport-fallback ()
   "Plain viewport responses should remain typed navigation targets."
