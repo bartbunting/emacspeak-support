@@ -60,9 +60,10 @@ Completed so far:
   redundant spoken "Press RET to toggle" hint while leaving the visual message
   and non-arrow action feedback intact;
 - completing-read transcript navigation by agent response, user prompt,
-  thought, tool call/group, plan, permission, error, rendered table, or other
-  block, with complete body speech, explicit boundaries, collapsed-group
-  expansion, temporary repeat keys in shell and viewport buffers, and
+  thought, activity group, tool call, plan, permission, error, rendered table,
+  or other block, with complete body speech, explicit boundaries,
+  collapsed-group expansion, temporary repeat keys in shell and viewport
+  buffers, and
   directional property search that does not rebuild or copy the complete
   transcript on every move;
 - semantic fenced source-block navigation in shell and viewport buffers, with
@@ -93,9 +94,10 @@ explicit response summary/repeat commands are still open work.
 selection is the default.  After a successful move, `]` and `[` temporarily
 repeat that selection in either direction.  Navigation does not wrap.  It
 speaks the complete selected body, preceded by a label/status where present;
-bodyless groups retain concise label and fold-state feedback.  Selecting a
-tool inside a collapsed group expands the group before moving to the tool.
-Rendered tables and fenced source blocks are also selectable.  Tables retain
+bodyless activity groups retain their descriptive summary and fold-state
+feedback.  Selecting a thought or tool inside a collapsed group expands the
+group before moving to that member.  Rendered tables and fenced source blocks
+are also selectable.  Tables retain
 the less chatty table-entry announcement: dimensions and the entry cell rather
 than every cell.  Source-block arrival reports only the language and line
 count; reading all of the code remains explicit.
@@ -122,8 +124,11 @@ the bracket inserts normally.
 Agent-shell currently exposes generic next/previous block navigation but no
 public semantic block-type field.  The compatibility adapter therefore infers
 type from `agent-shell-ui-state` qualified IDs and group metadata, with prompt,
-viewport, rendered-table, and rendered-source properties as fallbacks.  Keep
-this inference isolated and replace it with a public semantic accessor if
+viewport, rendered-table, and rendered-source properties as fallbacks.  Both
+older `tool-calls-N` groups and current `activity-N` groups use the stable
+generic group kind and are presented as activity groups; the former
+`tool-group` navigation symbol remains a reload-compatible alias.  Keep this
+inference isolated and replace it with a public semantic accessor if
 agent-shell adds one.
 
 ### Markdown Source Block Keys

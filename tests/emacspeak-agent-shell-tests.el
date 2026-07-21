@@ -371,14 +371,16 @@ ENTRIES is an alist of qualified block IDs to body strings."
      (agent-shell-ui-update-fragment
       (agent-shell-ui-make-fragment-model
        :namespace-id "1" :block-id "2-agent_thought_chunk"
-       :label-left "Thinking" :body "Reasoning")
+       :label-left "Thinking" :body "Reasoning"
+       :group-id "activity-1"
+       :group-label "Thought, read a file" :group-expanded nil)
       :expanded nil)
      (agent-shell-ui-update-fragment
       (agent-shell-ui-make-fragment-model
        :namespace-id "1" :block-id "tool-123"
        :label-left "completed" :label-right "Read file"
-       :body "Tool output\nsecond line" :group-id "tool-calls-1"
-       :group-label "Tool calls" :group-expanded nil)
+       :body "Tool output\nsecond line" :group-id "activity-1"
+       :group-label "Thought, read a file" :group-expanded nil)
       :expanded nil)
      (agent-shell-ui-update-fragment
       (agent-shell-ui-make-fragment-model
@@ -2075,33 +2077,35 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (mapcar
        (lambda (location) (plist-get location :type))
        (emacspeak-agent-shell--block-locations))
-      '(user-prompt agent-response thought tool-group tool-call plan
+      '(user-prompt agent-response activity-group thought tool-call plan
                     permission error agent-response)))))
 
-(ert-deftest emacspeak-agent-shell-block-navigation-expands-tool-group ()
-  "Selecting a hidden tool should expand its group and read its full body."
-  (emacspeak-agent-shell-test--with-semantic-blocks
-    (let* ((locations (emacspeak-agent-shell--block-locations))
-           (tool
-            (seq-find
-             (lambda (location)
-               (eq (plist-get location :type) 'tool-call))
-             locations)))
-      (should (invisible-p (plist-get tool :position)))
-      (goto-char (point-min))
-      (should
-       (equal
-        (emacspeak-agent-shell-test--capture-events
-          (emacspeak-agent-shell--jump-block-of-type
-           'tool-call 'forward))
-        '((stop nil)
-          (icon large-movement)
-          (speak "completed Read file. Tool output\nsecond line"))))
-      (should (= (point) (plist-get tool :position)))
-      (should-not (invisible-p (point))))))
+(ert-deftest emacspeak-agent-shell-block-navigation-expands-activity-members ()
+  "Selecting a hidden thought or tool should expand its activity group."
+  (dolist (case '((thought "Thinking. Reasoning")
+                  (tool-call
+                   "completed Read file. Tool output\nsecond line")))
+    (emacspeak-agent-shell-test--with-semantic-blocks
+      (let* ((type (car case))
+             (location
+              (seq-find
+               (lambda (candidate)
+                 (eq (plist-get candidate :type) type))
+               (emacspeak-agent-shell--block-locations))))
+        (should (invisible-p (plist-get location :position)))
+        (goto-char (point-min))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell--jump-block-of-type type 'forward))
+          `((stop nil)
+            (icon large-movement)
+            (speak ,(cadr case)))))
+        (should (= (point) (plist-get location :position)))
+        (should-not (invisible-p (point)))))))
 
-(ert-deftest emacspeak-agent-shell-block-navigation-reads-prompt-and-group ()
-  "Manual navigation should read prompt bodies and describe bodyless groups."
+(ert-deftest emacspeak-agent-shell-block-navigation-reads-activity-group ()
+  "Manual navigation should identify a descriptive activity-group header."
   (emacspeak-agent-shell-test--with-semantic-blocks
     (goto-char (point-min))
     (should
@@ -2117,10 +2121,42 @@ Return speech events plus the target character.  DIRECTION is `forward' or
      (equal
       (emacspeak-agent-shell-test--capture-events
         (emacspeak-agent-shell--jump-block-of-type
-         'tool-group 'forward))
+         'activity-group 'forward))
       '((stop nil)
         (icon large-movement)
-        (speak "Tool calls, collapsed."))))))
+        (speak
+         "Activity group, Thought, read a file, collapsed."))))))
+
+(ert-deftest emacspeak-agent-shell-legacy-tool-group-remains-navigable ()
+  "Old tool-call group IDs and the former type name should remain usable."
+  (with-temp-buffer
+    (insert "before\n")
+    (agent-shell-ui-update-fragment
+     (agent-shell-ui-make-fragment-model
+      :namespace-id "1" :block-id "tool-123"
+      :label-left "completed" :label-right "Read file"
+      :group-id "tool-calls-1" :group-label "Tool calls"
+      :group-expanded nil)
+     :expanded nil)
+    (setq major-mode 'agent-shell-mode)
+    (let ((group
+           (seq-find
+            (lambda (location)
+              (eq (plist-get location :type) 'activity-group))
+            (emacspeak-agent-shell--block-locations))))
+      (should group)
+      (should
+       (equal (map-elt (plist-get group :state) :qualified-id)
+              "1-tool-calls-1"))
+      (goto-char (point-min))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--jump-block-of-type
+           'tool-group 'forward))
+        '((stop nil)
+          (icon large-movement)
+          (speak "Activity group, Tool calls, collapsed.")))))))
 
 (ert-deftest emacspeak-agent-shell-block-navigation-does-not-wrap ()
   "Typed navigation should read bodies and stop at transcript boundaries."

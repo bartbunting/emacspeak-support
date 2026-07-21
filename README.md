@@ -116,8 +116,9 @@ asynchronous, multi-session interface.  It currently includes:
 - voices for current agent-shell interface and rendered Markdown faces;
 - semantic status words for faced plan/status icons while leaving ordinary
   ellipses unchanged;
-- typed transcript navigation for responses, prompts, thoughts, tools, plans,
-  permissions, errors, source blocks, and rendered tables;
+- typed transcript navigation for responses, prompts, thoughts, activity
+  groups, tools, plans, permissions, errors, source blocks, and rendered
+  tables;
 - fenced source-block reading and copying; and
 - two-dimensional Markdown table navigation, row/column reading, configurable
   header speech, logical copying, and direct table exit.

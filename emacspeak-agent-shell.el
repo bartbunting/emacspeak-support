@@ -1463,7 +1463,7 @@ Provide an auditory icon if possible."
     ("User prompt" . user-prompt)
     ("Thought or reasoning" . thought)
     ("Tool call" . tool-call)
-    ("Tool group" . tool-group)
+    ("Activity group" . activity-group)
     ("Plan" . plan)
     ("Permission" . permission)
     ("Error" . error)
@@ -1472,12 +1472,23 @@ Provide an auditory icon if possible."
     ("Other" . other))
   "Completion candidates for semantic agent-shell block navigation.")
 
+(defun emacspeak-agent-shell--normalize-block-type (type)
+  "Return current semantic navigation type for TYPE.
+`tool-group' is the name used by older loaded support versions."
+  (if (eq type 'tool-group) 'activity-group type))
+
 (defvar emacspeak-agent-shell--block-navigation-type 'agent-response
   "Most recently selected semantic agent-shell block type.")
 
+;; Preserve a live session's selection when reloading across the rename.
+(when (eq emacspeak-agent-shell--block-navigation-type 'tool-group)
+  (setq emacspeak-agent-shell--block-navigation-type 'activity-group))
+
 (defun emacspeak-agent-shell--block-type-label (type)
   "Return the display label for semantic block TYPE."
-  (or (car (rassq type emacspeak-agent-shell--block-type-choices))
+  (or (car (rassq
+            (emacspeak-agent-shell--normalize-block-type type)
+            emacspeak-agent-shell--block-type-choices))
       "Other"))
 
 (defun emacspeak-agent-shell--accept-block-type-default ()
@@ -1533,7 +1544,9 @@ keep that compatibility inference isolated here."
    ((and (stringp qualified-id)
          (string-match-p "permission-" qualified-id))
     'permission)
-   ((eq (map-elt state :kind) 'group) 'tool-group)
+   ;; Both old `tool-calls-N' headers and current `activity-N' headers use
+   ;; agent-shell-ui's stable generic group kind.
+   ((eq (map-elt state :kind) 'group) 'activity-group)
    ((map-elt state :group-id) 'tool-call)
    ((and (stringp qualified-id)
          (string-match-p "-plan\\'" qualified-id))
@@ -2126,6 +2139,7 @@ END-BOUNDARY is non-nil."
 (defun emacspeak-agent-shell--block-location-in-direction
     (type direction origin)
   "Return the nearest semantic TYPE from ORIGIN in DIRECTION."
+  (setq type (emacspeak-agent-shell--normalize-block-type type))
   (pcase type
     ('table
      (emacspeak-agent-shell--property-location-in-direction
@@ -2251,20 +2265,40 @@ END-BOUNDARY is non-nil."
     (or (plist-get location :body) "")
     'face 'agent-shell-markdown-source-block)))
 
+(defun emacspeak-agent-shell--activity-group-speech-label (label)
+  "Return a semantic activity-group heading for rendered LABEL."
+  (let ((case-fold-search t))
+    (cond
+     ((not label) "Activity group")
+     ((string-match-p "\\_<activity\\_>" label) label)
+     (t (concat "Activity group, " label)))))
+
 (defun emacspeak-agent-shell--block-location-speech (location)
   "Return complete semantic speech for block LOCATION."
-  (let* ((label (plist-get location :label))
+  (let* ((type (plist-get location :type))
+         (label (plist-get location :label))
          (body (plist-get location :body))
          (fallback
           (or label
               (emacspeak-agent-shell--block-type-label
-               (plist-get location :type)))))
-    (if body
-        (string-join (delq nil (list label body)) ". ")
+               type))))
+    (cond
+     ((eq type 'activity-group)
+      (concat
+       (string-join
+        (delq nil
+              (list
+               (emacspeak-agent-shell--activity-group-speech-label label)
+               (plist-get location :fold-state)))
+        ", ")
+       "."))
+     (body
+      (string-join (delq nil (list label body)) ". "))
+     (t
       (concat
        (string-join
         (delq nil (list fallback (plist-get location :fold-state))) ", ")
-       "."))))
+       ".")))))
 
 (defun emacspeak-agent-shell--jump-block-of-type
     (type direction &optional origin)
