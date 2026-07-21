@@ -44,7 +44,7 @@
 ;; It is built on shell-maker and provides a comint-based interface.
 ;;
 ;; This module speech-enables agent-shell, providing:
-;; - Semantic response speech at public turn-completion boundaries
+;; - Semantic response, thought, and plan speech at turn-completion boundaries
 ;; - Permission, lifecycle, error, and tool-status feedback
 ;; - Focus-aware foreground and background speech levels
 ;; - Semantic header and face-to-voice support
@@ -127,10 +127,11 @@ cues."
   "Automatic speech level for the focused agent-shell session.
 The focused session is the selected agent-shell buffer or the shell associated
 with the selected viewport.  `full' preserves configured response, thought,
-tool, and lifecycle feedback.  `response' speaks agent responses and completion
-feedback while suppressing routine thought and tool chatter.  `notify' only
-signals completion, and `quiet' suppresses routine feedback.  Permissions and
-errors remain controlled separately because they may require action."
+plan, tool, and lifecycle feedback.  `response' speaks agent responses and
+completion feedback while suppressing routine thought, plan, and tool chatter.
+`notify' only signals completion, and `quiet' suppresses routine feedback.
+Permissions and errors remain controlled separately because they may require
+action."
   :type '(choice (const :tag "Full detail" full)
                  (const :tag "Responses" response)
                  (const :tag "Notifications" notify)
@@ -455,17 +456,17 @@ a timer created by an older loaded version.")
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-timer)
 
 (defvar emacspeak-agent-shell--pending-speech-qualified-ids nil
-  "List of rendered response qualified IDs pending speech, in arrival order.")
+  "List of rendered turn-content IDs pending speech, in arrival order.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-speech-qualified-ids)
 
 (defvar emacspeak-agent-shell--pending-bodies nil
-  "Hash table mapping qualified ID to its latest rendered response body.")
+  "Hash table mapping qualified ID to its latest rendered turn-content body.")
 
 (make-variable-buffer-local 'emacspeak-agent-shell--pending-bodies)
 
 (defvar-local emacspeak-agent-shell--response-turn-active-p nil
-  "Non-nil while a submitted agent turn can produce response sections.")
+  "Non-nil while a submitted agent turn can produce semantic sections.")
 
 (defvar-local emacspeak-agent-shell--permission-subscription nil
   "Subscription token for permission request events in this shell.")
@@ -951,10 +952,10 @@ selects the configured foreground or background level."
     (clrhash emacspeak-agent-shell--pending-bodies)))
 
 (defun emacspeak-agent-shell--response-section-snapshot (range)
-  "Return the qualified ID and rendered body represented by section RANGE.
-Return nil for a non-response section.  Agent-shell calls its experimental
-section hook after Markdown rendering, so the body retains semantic faces and
-omits markup that is no longer displayed."
+  "Return qualified ID and rendered turn content represented by section RANGE.
+Agent responses, thoughts, and plans are collected; other sections return nil.
+Agent-shell calls its experimental section hook after Markdown rendering, so
+the body retains semantic faces and omits markup that is no longer displayed."
   (when-let* ((body-start (map-nested-elt range '(:body :start)))
               ((< body-start (point-max)))
               ((eq (get-text-property body-start 'agent-shell-ui-section)
@@ -964,7 +965,8 @@ omits markup that is no longer displayed."
               (qualified-id (map-elt state :qualified-id))
               ((and (stringp qualified-id)
                     (string-match-p
-                     "agent_message_chunk\\'" qualified-id)))
+                     "\\(?:agent_message_chunk\\|agent_thought_chunk\\|-plan\\)\\'"
+                     qualified-id)))
               (body-end
                (or (next-single-property-change
                     body-start 'agent-shell-ui-section nil (point-max))
@@ -977,7 +979,7 @@ omits markup that is no longer displayed."
     (cons qualified-id body)))
 
 (defun emacspeak-agent-shell--record-response-section (range)
-  "Record the latest rendered agent response represented by section RANGE."
+  "Record the latest rendered turn content represented by section RANGE."
   (when emacspeak-agent-shell--response-turn-active-p
     (when-let* ((snapshot
                  (emacspeak-agent-shell--response-section-snapshot range))
@@ -994,7 +996,7 @@ omits markup that is no longer displayed."
                       (list qualified-id)))))))
 
 (defun emacspeak-agent-shell--response-section-setup ()
-  "Install semantic rendered-response capture in the current shell."
+  "Install semantic rendered turn-content capture in the current shell."
   ;; Cancel a pause timer that may survive reloading an older implementation.
   (when (timerp emacspeak-agent-shell--pending-speech-timer)
     (cancel-timer emacspeak-agent-shell--pending-speech-timer)
@@ -1010,23 +1012,23 @@ omits markup that is no longer displayed."
             (error nil)))))
 
 (defun emacspeak-agent-shell--response-section-cleanup ()
-  "Remove semantic rendered-response capture from the current shell."
+  "Remove semantic rendered turn-content capture from the current shell."
   (remove-hook 'agent-shell-section-functions
                #'emacspeak-agent-shell--record-response-section t)
   (setq emacspeak-agent-shell--response-turn-active-p nil))
 
 (defun emacspeak-agent-shell--begin-response-turn ()
-  "Start collecting rendered responses for a newly submitted turn."
+  "Start collecting rendered turn content for a newly submitted turn."
   (emacspeak-agent-shell--cancel-pending-speech)
   (setq emacspeak-agent-shell--response-turn-active-p t))
 
 (defun emacspeak-agent-shell--discard-response-turn ()
-  "Discard collected responses and finish the current turn."
+  "Discard collected turn content and finish the current turn."
   (setq emacspeak-agent-shell--response-turn-active-p nil)
   (emacspeak-agent-shell--cancel-pending-speech))
 
 (defun emacspeak-agent-shell--finish-response-turn ()
-  "Speak collected rendered responses once and finish the current turn."
+  "Speak collected rendered turn content once and finish the current turn."
   (setq emacspeak-agent-shell--response-turn-active-p nil)
   (emacspeak-agent-shell--deliver-pending-blocks
    (current-buffer)
@@ -1077,9 +1079,9 @@ omits markup that is no longer displayed."
         (setq emacspeak-agent-shell--permission-action-cache
               (make-hash-table :test #'equal)))
       (puthash key actions emacspeak-agent-shell--permission-action-cache)))
-  ;; Rendered-response capture ignores permission fragments, so an urgent
-  ;; request interrupts current speech without discarding the answer collected
-  ;; so far.  A later response update refreshes the complete body snapshot.
+  ;; Rendered turn-content capture ignores permission fragments, so an urgent
+  ;; request interrupts current speech without discarding turn content collected
+  ;; so far.  A later section update refreshes the complete body snapshot.
   (when emacspeak-agent-shell-speak-permissions
     (dtk-stop)
     (emacspeak-agent-shell--deliver-announcement
@@ -1344,7 +1346,7 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
             ;; Just play an icon for status-only mode
             (emacspeak-icon 'task-done)))))
       ('plan
-       (when (emacspeak-agent-shell--speech-level-at-least-p 'response)
+       (when (emacspeak-agent-shell--speech-level-at-least-p 'full)
          (emacspeak-icon 'item)
          (dtk-speak (concat "Plan: " trimmed-content))))
       ('error

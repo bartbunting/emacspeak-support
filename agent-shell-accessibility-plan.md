@@ -39,10 +39,11 @@ Completed so far:
   distinct normal, cancelled, limited, refused, and failed outcomes;
 - public tool-call status feedback with per-tool transition deduplication and
   icon-only, summary, and full-output verbosity;
-- semantic response delivery that records the latest rendered body under
-  agent-shell's real qualified ID and speaks it once at public turn completion;
-  network pauses no longer imply completion, and the private fragment-update
-  advice is removed;
+- semantic turn-content delivery that records the latest rendered response,
+  thought, and plan bodies under agent-shell's real qualified IDs and applies
+  the configured speech policy once at public turn completion; network pauses
+  no longer imply completion, and the private fragment-update advice is
+  removed;
 - current viewport compose submission and accepted-cancellation feedback,
   including suppression of false success and declined-cancellation cues;
 - preservation of agent-shell's text and graphical headers, with concise
@@ -161,7 +162,7 @@ Automatic speech follows the selected session by default.  Focused sessions
 use `emacspeak-agent-shell-foreground-speech-level`; other sessions use
 `emacspeak-agent-shell-background-speech-level`.  The levels are:
 
-- `full` for configured response, thought, tool, and lifecycle feedback;
+- `full` for configured response, thought, plan, tool, and lifecycle feedback;
 - `response` for agent responses and turn completion;
 - `notify` for turn completion only; and
 - `quiet` for no routine feedback.
@@ -175,16 +176,19 @@ session selector controls the backing shell from viewport mode.  Selecting
 `emacspeak-agent-shell-cycle-speech-level` command remains available through
 `M-x` for users who prefer repeated cycling.
 
-### Response Completion
+### Turn Content and Response Completion
 
-Only sections rendered during an active submitted turn are collected.  Each
-update replaces the stored snapshot for its real agent-shell qualified ID, so
-a streaming pause produces no speech and separate response fragments preserve
-their arrival order.  A successful public `turn-complete` event speaks the
-rendered snapshots once, followed by the completion cue.  Cancellation,
-failure, and public error events discard partial response text before their
-semantic outcome announcement.  Permission prompts interrupt speech without
-discarding the current answer snapshot.
+Only response, thought, and plan sections rendered during an active submitted
+turn are collected.  Each update replaces the stored snapshot for its real
+agent-shell qualified ID, so a streaming pause produces no speech and separate
+sections preserve their arrival order.  At `response` level, only answer
+sections are spoken.  At `full`, plan sections are spoken and thoughts follow
+`emacspeak-agent-shell-speak-thought-process`.  A successful public
+`turn-complete` event applies that policy to the rendered snapshots once,
+followed by the completion cue.  Cancellation, failure, and public error
+events discard partial turn content before their semantic outcome
+announcement.  Permission prompts interrupt speech without discarding the
+current snapshots.
 
 `emacspeak-agent-shell-speech-delay` remains defined for configuration
 compatibility but no longer determines completion.  Reloading support removes
@@ -325,10 +329,10 @@ to both existing and newly created shell buffers.
 - Setting changes speak the selected value, not just "changed".  Session
   announcements include a short title or agent identity when ambiguity is
   possible.
-- Foreground output defaults to response speech without routine tool or thought
-  chatter.  Background output defaults to completion notifications with a
-  session prefix; verbose background response speech is opt-in.  Permissions
-  and errors remain audible at the quiet routine level.
+- Foreground output defaults to response speech without routine tool, thought,
+  or plan chatter.  Background output defaults to completion notifications
+  with a session prefix; verbose background response speech is opt-in.
+  Permissions and errors remain audible at the quiet routine level.
 - Preserve agent-shell's header-line information instead of replacing it.
   When a graphical header has no textual representation, entering the buffer
   speaks a concise semantic summary: agent, project, viewport position and
@@ -386,9 +390,9 @@ item.
 Exit criterion: chunk boundaries and network pauses do not create duplicate or
 truncated speech, and restored user messages and unknown blocks remain usable.
 
-Status: the semantic boundary, response capture, foreground/background policy,
-and typed fragment navigation are complete.  Explicit summary, full-response,
-and repeat-last-response commands remain.
+Status: the semantic boundary, response/thought/plan capture,
+foreground/background policy, and typed fragment navigation are complete.
+Explicit summary, full-response, and repeat-last-response commands remain.
 
 ### Phase 3: Navigation, Voices, and Viewport
 

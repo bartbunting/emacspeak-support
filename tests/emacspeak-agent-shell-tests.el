@@ -959,12 +959,13 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            (:data (:stop-reason . "end_turn")))))
       '((icon task-done))))))
 
-(ert-deftest emacspeak-agent-shell-response-sections-use-real-id-and-order ()
-  "Multiple rendered responses should retain qualified IDs and arrival order."
+(ert-deftest emacspeak-agent-shell-turn-sections-use-real-id-and-order ()
+  "Turn content should retain qualified IDs while response policy stays quiet."
   (let ((emacspeak-agent-shell-signal-processing nil))
     (with-temp-buffer
       (setq major-mode 'agent-shell-mode)
       (setq-local emacspeak-comint-autospeak t)
+      (setq-local emacspeak-agent-shell-speech-level 'response)
       (setq-local agent-shell-section-functions
                   '(emacspeak-agent-shell--record-response-section))
       (should
@@ -977,19 +978,71 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            :body "First answer")
           (emacspeak-agent-shell-test--render-response-section
            :namespace-id "7" :block-id "agent_thought_chunk"
-           :body "Do not collect" :create-new t)
+           :body "Reasoning available at full" :create-new t)
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "tool-1-plan"
+           :body "Plan available at full" :create-new t)
           (emacspeak-agent-shell-test--render-response-section
            :namespace-id "7" :block-id "2-agent_message_chunk"
            :body "Second answer" :create-new t)
           (should
            (equal emacspeak-agent-shell--pending-speech-qualified-ids
                   '("7-1-agent_message_chunk"
+                    "7-agent_thought_chunk"
+                    "7-tool-1-plan"
                     "7-2-agent_message_chunk")))
           (emacspeak-agent-shell--handle-lifecycle-event
            '((:event . turn-complete)
              (:data (:stop-reason . "end_turn")))))
         '((speak "First answer")
           (speak "Second answer")))))))
+
+(ert-deftest emacspeak-agent-shell-full-level-speaks-turn-thoughts-and-plans ()
+  "Full speech should deliver thoughts and plans once at turn completion."
+  (let ((emacspeak-agent-shell-signal-processing nil)
+        (emacspeak-agent-shell-speak-thought-process 'speak))
+    (with-temp-buffer
+      (setq major-mode 'agent-shell-mode)
+      (setq-local emacspeak-comint-autospeak t)
+      (setq-local emacspeak-agent-shell-speech-level 'full)
+      (setq-local agent-shell-section-functions
+                  '(emacspeak-agent-shell--record-response-section))
+      (should
+       (equal
+        (emacspeak-agent-shell-test--capture-events
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . input-submitted)))
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "1-agent_thought_chunk"
+           :body "Check constraints")
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "reader-plan"
+           :body "Inspect then edit" :create-new t)
+          (emacspeak-agent-shell-test--render-response-section
+           :namespace-id "7" :block-id "answer-agent_message_chunk"
+           :body "Final answer" :create-new t)
+          (emacspeak-agent-shell--handle-lifecycle-event
+           '((:event . turn-complete)
+             (:data (:stop-reason . "end_turn")))))
+        '((speak "Thinking: Check constraints")
+          (icon item)
+          (speak "Plan: Inspect then edit")
+          (speak "Final answer")))))))
+
+(ert-deftest emacspeak-agent-shell-full-level-honors-thought-method ()
+  "Full speech should retain icon and silent thought methods."
+  (with-temp-buffer
+    (setq-local emacspeak-agent-shell-speech-level 'full)
+    (should
+     (equal
+      (emacspeak-agent-shell-test--capture-events
+        (let ((emacspeak-agent-shell-speak-thought-process 'icon))
+          (emacspeak-agent-shell--speak-content "Reasoning" 'thought)))
+      '((icon progress))))
+    (should-not
+     (emacspeak-agent-shell-test--capture-events
+       (let ((emacspeak-agent-shell-speak-thought-process nil))
+         (emacspeak-agent-shell--speak-content "Reasoning" 'thought))))))
 
 (ert-deftest emacspeak-agent-shell-user-message-fixture-is-semantic ()
   "A restored user-message fixture should retain its speaker identity."

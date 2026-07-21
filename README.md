@@ -106,8 +106,9 @@ Emacspeak mailing-list patch.
 `emacspeak-agent-shell.el` provides semantic speech for agent-shell's
 asynchronous, multi-session interface.  It currently includes:
 
-- response speech at the public turn-completion boundary, without treating a
-  network pause as completion;
+- semantic response speech at the public turn-completion boundary, with
+  thought and plan speech at full detail, without treating a network pause as
+  completion;
 - distinct permission, lifecycle, error, and tool-status feedback;
 - focus-aware foreground and background speech levels;
 - a concise spoken graphical header on focus and full session-state speech

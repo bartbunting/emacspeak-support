@@ -19,11 +19,11 @@ AGENT_SHELL_DIR=/path/to/agent-shell \
 emacs --batch -Q -l tests/run-tests.el
 ```
 
-The suite covers response boundaries, lifecycle and permission events, tool
-updates, foreground/background policy, headers and voices, status semantics,
-typed transcript and source navigation, Markdown table interaction, upstream
-API/face drift, and teardown.  All checked-in tests are normal regression tests
-and are expected to pass.
+The suite covers semantic turn-content boundaries and response/thought/plan
+policy, lifecycle and permission events, tool updates, foreground/background
+policy, headers and voices, status semantics, typed transcript and source
+navigation, Markdown table interaction, upstream API/face drift, and teardown.
+All checked-in tests are normal regression tests and are expected to pass.
 
 For end-to-end speech-server logging and manual-listening methodology, see
 [../AGENTS.md](../AGENTS.md).  The audited external revisions are recorded in
