@@ -49,6 +49,11 @@ Completed so far:
   latest body, background notify/response/full sessions hear a named
   content-free availability notice, and quiet sessions and restored history
   remain silent;
+- `C-c r` explicitly speaks all semantic answer fragments from the latest
+  interaction without moving shell or viewport point, preserving rendered
+  voices while excluding thoughts, plans, tools, and other activity; the
+  command remains available at every automatic speech level and uses the
+  complete response only for legacy unannotated transcripts;
 - current viewport compose submission and accepted-cancellation feedback,
   distinguishing immediate submission from queueing, continued composition,
   and compose-window dismissal while suppressing false success and
@@ -218,6 +223,13 @@ removes the former `agent-shell--update-fragment` advice, cancels any timer left
 by the older implementation, and installs the section collector in already
 enabled shell buffers without requiring a session restart.
 
+`C-c r` provides an explicit full replay of the latest agent answer.  It uses
+agent-shell's public last-interaction accessors and the rendered semantic
+fragment properties rather than retaining another response cache.  Multiple
+answer fragments are read in order; thought, plan, tool, and other activity
+fragments are omitted.  The command does not move point, and an explicit
+invocation bypasses automatic foreground/background speech levels.
+
 ## Findings
 
 ### Original Highest-Priority Defects
@@ -283,8 +295,7 @@ in Implementation Progress above.
 
 ### Remaining Semantic Gaps
 
-- explicit concise-summary, full-response, repeat-last-response, and fold-all
-  commands;
+- an explicit concise response overview and fold-all commands;
 - public `idle` feedback independent of turn completion;
 - generic viewport item/page, peek, reply, history, and prompt-queue command
   feedback beyond the implemented compose, submit, cancellation, refresh,
@@ -356,6 +367,8 @@ to both existing and newly created shell buffers.
 - Setting changes speak the selected value, not just "changed".  Session
   announcements include a short title or agent identity when ambiguity is
   possible.
+- Explicit latest-response speech reads all answer fragments regardless of
+  automatic speech level, without moving point or replaying activity details.
 - Foreground output defaults to response speech without routine tool, thought,
   or plan chatter.  Background output defaults to completion notifications
   with a session prefix; verbose background response speech is opt-in.
@@ -412,7 +425,7 @@ item.
 - Flush submitted-turn content on public semantic completion; reserve delayed
   coalescing for explicit out-of-turn agent messages and reload cleanup for
   timers from older loaded versions.
-- Add concise-summary, full-body, and repeat-last-response commands.
+- Add explicit full latest-answer/repeat and concise-overview commands.
 - Define foreground/background and thought/plan policies.
 
 Exit criterion: chunk boundaries and network pauses do not create duplicate or
@@ -421,9 +434,9 @@ restored history chatty, and restored user messages and unknown blocks remain
 usable.
 
 Status: the semantic boundary, response/thought/plan capture, one-time
-out-of-turn delivery, foreground/background policy, and typed fragment
-navigation are complete.  Explicit summary, full-response, and
-repeat-last-response commands remain.
+out-of-turn delivery, foreground/background policy, full latest-answer replay,
+and typed fragment navigation are complete.  An explicit concise overview
+remains.
 
 ### Phase 3: Navigation, Voices, and Viewport
 

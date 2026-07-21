@@ -112,6 +112,8 @@ asynchronous, multi-session interface.  It currently includes:
 - one-time focused speech for agent messages that arrive outside a submitted
   turn, with a named content-free notification when their session is in the
   background and silence for restored history;
+- on-demand full speech for the latest agent answer without moving point or
+  replaying its thoughts, plans, and tool activity;
 - distinct permission, lifecycle, error, and tool-status feedback;
 - focus-aware foreground and background speech levels;
 - viewport submission feedback that distinguishes submitted and queued prompts,
@@ -140,6 +142,7 @@ These keys are installed in agent-shell shell and viewport buffers:
 | --- | --- |
 | `C-c C-q` | Select speech level for the current session |
 | `C-c C-S-q` | Select the default speech level for background sessions |
+| `C-c r` | Speak the latest agent answer in full without moving point |
 | `C-c ]`, `C-c [` | Select a block type and move forward or backward |
 | `]`, `[` | Repeat typed navigation, infer the type at point, or open the selector |
 | `C-c C-b` | Speak the complete fenced source block at point |
@@ -149,6 +152,12 @@ These keys are installed in agent-shell shell and viewport buffers:
 Bare brackets retain normal insertion at the live prompt and in a viewport
 compose buffer.  Block-type completion is case-insensitive; pressing the same
 bracket again with an empty selector accepts its default.
+
+`C-c r` works from shell and viewport buffers and is always spoken when
+explicitly invoked, even when automatic speech is quiet.  It reads all answer
+fragments from the latest interaction in order while omitting thought, plan,
+tool, and other activity fragments.  Legacy unannotated responses fall back to
+their complete response text.
 
 In a viewport compose buffer, `C-c C-c` announces whether the prompt was
 submitted immediately or queued.  With `C-u C-c C-c`, it also confirms that

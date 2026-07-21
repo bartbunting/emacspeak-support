@@ -82,10 +82,14 @@
                   "emacspeak-agent-shell" (accept-key))
 (declare-function emacspeak-agent-shell--accept-block-type-default
                   "emacspeak-agent-shell" ())
+(declare-function emacspeak-agent-shell--agent-answer-from-response
+                  "emacspeak-agent-shell" (response))
 (declare-function emacspeak-agent-shell--source-block-locations
                   "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--source-block-summary
                   "emacspeak-agent-shell" (location))
+(declare-function emacspeak-agent-shell-speak-last-response
+                  "emacspeak-agent-shell" ())
 (declare-function emacspeak-agent-shell--jump-block-of-type
                   "emacspeak-agent-shell" (type direction &optional origin))
 (declare-function emacspeak-agent-shell--buffer-setup
@@ -360,6 +364,27 @@ ENTRIES is an alist of qualified block IDs to body strings."
           (agent-shell-markdown-replace-markup))))
     (run-hook-with-args 'agent-shell-section-functions range)
     range))
+
+(defun emacspeak-agent-shell-test--rendered-interaction-response ()
+  "Return a rendered response containing answer and non-answer fragments."
+  (with-temp-buffer
+    (setq-local agent-shell-section-functions nil)
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "1-agent_message_chunk"
+     :body "**First answer**")
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "2-agent_thought_chunk"
+     :body "Private reasoning" :create-new t)
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "tool-123"
+     :body "Tool output" :create-new t)
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "reader-plan"
+     :body "Private plan" :create-new t)
+    (emacspeak-agent-shell-test--render-response-section
+     :namespace-id "turn-1" :block-id "3-agent_message_chunk"
+     :body "`Second answer`" :create-new t)
+    (buffer-string)))
 
 (defmacro emacspeak-agent-shell-test--with-semantic-blocks (&rest body)
   "Create representative agent-shell transcript blocks, then run BODY."
@@ -1188,6 +1213,117 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (should-not emacspeak-agent-shell--out-of-turn-bodies)
       (should-not emacspeak-agent-shell--out-of-turn-delivered-ids))))
 
+(ert-deftest emacspeak-agent-shell-latest-answer-keeps-only-response-bodies ()
+  "Latest-answer extraction should retain voiced answers and omit activity."
+  (let* ((response
+          (emacspeak-agent-shell-test--rendered-interaction-response))
+         (answer
+          (emacspeak-agent-shell--agent-answer-from-response response)))
+    (should
+     (equal (substring-no-properties answer)
+            "First answer\nSecond answer"))
+    (should-not (string-match-p "reasoning\\|Tool\\|plan"
+                                (substring-no-properties answer)))
+    (should
+     (eq (emacspeak-agent-shell-test--face-at-text answer "First")
+         'agent-shell-markdown-bold))
+    (should
+     (eq (emacspeak-agent-shell-test--face-at-text answer "Second")
+         'agent-shell-markdown-inline-code))))
+
+(ert-deftest emacspeak-agent-shell-latest-answer-has-plain-legacy-fallback ()
+  "Unannotated legacy interaction responses should remain explicitly readable."
+  (let* ((response
+          (propertize "Legacy answer" 'face 'agent-shell-markdown-bold))
+         (answer
+          (emacspeak-agent-shell--agent-answer-from-response response)))
+    (should (equal (substring-no-properties answer) "Legacy answer"))
+    (should
+     (eq (get-text-property 0 'face answer)
+         'agent-shell-markdown-bold)))
+  (let ((thought-only
+         (propertize
+          "Private reasoning"
+          'agent-shell-ui-state
+          '((:qualified-id . "turn-1-agent_thought_chunk"))
+          'agent-shell-ui-section 'body)))
+    (should-not
+     (emacspeak-agent-shell--agent-answer-from-response thought-only))))
+
+(ert-deftest emacspeak-agent-shell-speak-last-response-works-in-session-views ()
+  "Explicit last-response speech should work without moving shell or viewport."
+  (let ((shell (generate-new-buffer " *agent-shell-last-response*"))
+        (viewport (generate-new-buffer " *agent-shell-last-viewport*"))
+        (response
+         (emacspeak-agent-shell-test--rendered-interaction-response)))
+    (unwind-protect
+        (progn
+          (with-current-buffer shell
+            (insert "shell position")
+            (goto-char 3)
+            (setq major-mode 'agent-shell-mode)
+            (setq-local emacspeak-comint-autospeak nil)
+            (setq-local emacspeak-agent-shell-speech-level 'quiet))
+          (with-current-buffer viewport
+            (insert "viewport position")
+            (goto-char 5)
+            (setq major-mode 'agent-shell-viewport-view-mode)
+            (setq-local emacspeak-comint-autospeak nil)
+            (setq-local emacspeak-agent-shell-speech-level 'quiet))
+          (cl-letf
+              (((symbol-function 'emacspeak-agent-shell--session-buffer)
+                (lambda (&optional _buffer) shell))
+               ((symbol-function 'agent-shell-goto-last-interaction)
+                (lambda ()
+                  (should (eq (current-buffer) shell))
+                  (goto-char (point-max))))
+               ((symbol-function 'agent-shell-interaction-at-point)
+                (lambda () `((:response . ,response)))))
+            (dolist (buffer (list shell viewport))
+              (with-current-buffer buffer
+                (let ((point-before (point))
+                      (shell-point-before
+                       (with-current-buffer shell (point))))
+                  (let* ((events
+                          (emacspeak-agent-shell-test--capture-events
+                            (emacspeak-agent-shell-speak-last-response)))
+                         (spoken (cadr (nth 2 events))))
+                    (should
+                     (equal (mapcar #'car events) '(stop icon speak)))
+                    (should
+                     (equal (substring-no-properties spoken)
+                            "First answer\nSecond answer"))
+                    (should
+                     (eq
+                      (emacspeak-agent-shell-test--face-at-text
+                       spoken "First")
+                      'agent-shell-markdown-bold)))
+                  (should (= (point) point-before))
+                  (should
+                   (= (with-current-buffer shell (point))
+                      shell-point-before)))))))
+      (when (buffer-live-p viewport)
+        (kill-buffer viewport))
+      (when (buffer-live-p shell)
+        (kill-buffer shell)))))
+
+(ert-deftest emacspeak-agent-shell-speak-last-response-reports-empty-session ()
+  "Explicit last-response speech should report when no answer is available."
+  (with-temp-buffer
+    (setq major-mode 'agent-shell-mode)
+    (let ((position (point)))
+      (cl-letf (((symbol-function 'agent-shell-goto-last-interaction)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-interaction-at-point)
+                 (lambda () nil)))
+        (should
+         (equal
+          (emacspeak-agent-shell-test--capture-events
+            (emacspeak-agent-shell-speak-last-response))
+          '((icon warn-user)
+            (speak "No agent response available.")))))
+      (should (= (point) position)))))
+
 (ert-deftest emacspeak-agent-shell-user-message-fixture-is-semantic ()
   "A restored user-message fixture should retain its speaker identity."
   (let* ((updates
@@ -1580,6 +1716,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          (background-key (kbd "C-c C-S-q"))
          (speak-source-key (kbd "C-c C-b"))
          (copy-source-key (kbd "C-c C-y"))
+         (last-response-key (kbd "C-c r"))
          (next-block-key (kbd "C-c ]"))
          (previous-block-key (kbd "C-c ["))
          (context-next-key (kbd "]"))
@@ -1588,6 +1725,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
          (saved-background (lookup-key map background-key))
          (saved-speak-source (lookup-key map speak-source-key))
          (saved-copy-source (lookup-key map copy-source-key))
+         (saved-last-response (lookup-key map last-response-key))
          (saved-next-block (lookup-key map next-block-key))
          (saved-previous-block (lookup-key map previous-block-key))
          (saved-context-next (lookup-key map context-next-key))
@@ -1599,6 +1737,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
           (define-key map background-key nil)
           (define-key map speak-source-key nil)
           (define-key map copy-source-key nil)
+          (define-key map last-response-key nil)
           (define-key map next-block-key nil)
           (define-key map previous-block-key nil)
           (define-key map context-next-key nil)
@@ -1617,6 +1756,9 @@ Return speech events plus the target character.  DIRECTION is `forward' or
            (eq (lookup-key map copy-source-key)
                #'emacspeak-agent-shell-copy-source-block))
           (should
+           (eq (lookup-key map last-response-key)
+               #'emacspeak-agent-shell-speak-last-response))
+          (should
            (eq (lookup-key map next-block-key)
                #'emacspeak-agent-shell-next-block-of-type))
           (should
@@ -1632,6 +1774,7 @@ Return speech events plus the target character.  DIRECTION is `forward' or
       (define-key map background-key saved-background)
       (define-key map speak-source-key saved-speak-source)
       (define-key map copy-source-key saved-copy-source)
+      (define-key map last-response-key saved-last-response)
       (define-key map next-block-key saved-next-block)
       (define-key map previous-block-key saved-previous-block)
       (define-key map context-next-key saved-context-next)
@@ -3490,10 +3633,13 @@ Return speech events plus the target character.  DIRECTION is `forward' or
        (emacspeak-agent-shell--speak-content "Useful content" 'unknown)))))
 
 (ert-deftest emacspeak-agent-shell-advice-targets-exist ()
-  "Every configured advice target should exist in current agent-shell."
+  "Every configured advice and public integration target should exist."
   (should-not
    (seq-remove (lambda (entry) (fboundp (car entry)))
                emacspeak-agent-shell--advice-list))
+  (dolist (function '(agent-shell-goto-last-interaction
+                      agent-shell-interaction-at-point))
+    (should (fboundp function)))
   (should-not (assq 'agent-shell--update-fragment
                     emacspeak-agent-shell--advice-list))
   (should-not

@@ -45,6 +45,7 @@
 ;;
 ;; This module speech-enables agent-shell, providing:
 ;; - Semantic response, thought, and plan speech at turn-completion boundaries
+;; - On-demand full speech for the latest semantic agent answer
 ;; - Permission, lifecycle, error, and tool-status feedback
 ;; - Focus-aware foreground and background speech levels
 ;; - Semantic header and face-to-voice support
@@ -70,6 +71,8 @@
                   "agent-shell-usage" (percentage))
 (declare-function agent-shell-copy-source-block-at-point
                   "agent-shell" (&optional pos))
+(declare-function agent-shell-goto-last-interaction "agent-shell" ())
+(declare-function agent-shell-interaction-at-point "agent-shell" ())
 (declare-function agent-shell-markdown-source-block-at-point
                   "agent-shell-markdown" (&optional pos))
 (declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
@@ -929,6 +932,8 @@ selects the configured foreground or background level."
               #'emacspeak-agent-shell-speak-source-block)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c C-y")
               #'emacspeak-agent-shell-copy-source-block)
+  (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c r")
+              #'emacspeak-agent-shell-speak-last-response)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c ]")
               #'emacspeak-agent-shell-next-block-of-type)
   (define-key emacspeak-agent-shell--speech-control-map (kbd "C-c [")
@@ -1671,6 +1676,91 @@ keep that compatibility inference isolated here."
           qualified-id))
     'error)
    (t 'other)))
+
+(defun emacspeak-agent-shell--string-section-range
+    (text start end section)
+  "Return SECTION's text-property range in TEXT between START and END."
+  (let ((position start)
+        result)
+    (while (and (< position end) (not result))
+      (let ((next
+             (or (next-single-property-change
+                  position 'agent-shell-ui-section text end)
+                 end)))
+        (when (eq (get-text-property
+                   position 'agent-shell-ui-section text)
+                  section)
+          (setq result (cons position next)))
+        (setq position next)))
+    result))
+
+(defun emacspeak-agent-shell--agent-answer-from-response (response)
+  "Return only rendered agent answer bodies from interaction RESPONSE.
+Preserve their speech properties and order while excluding thoughts, plans,
+tools, and other semantic fragments.  Use the complete text as a compatibility
+fallback only when RESPONSE has no agent-shell semantic fragment properties."
+  (when (stringp response)
+    (let ((position 0)
+          (end (length response))
+          semantic-p
+          bodies)
+      (while (< position end)
+        (let* ((state
+                (get-text-property
+                 position 'agent-shell-ui-state response))
+               (next
+                (or (next-single-property-change
+                     position 'agent-shell-ui-state response end)
+                    end)))
+          (when state
+            (setq semantic-p t)
+            (when
+                (eq
+                 (emacspeak-agent-shell--semantic-block-type
+                  (map-elt state :qualified-id) state)
+                 'agent-response)
+              (when-let* ((body-range
+                           (emacspeak-agent-shell--string-section-range
+                            response position next 'body))
+                          (body
+                           (string-trim
+                            (substring
+                             response
+                             (car body-range) (cdr body-range))))
+                          ((not (string-empty-p body))))
+                (push body bodies))))
+          (setq position next)))
+      (cond
+       (bodies (string-join (nreverse bodies) "\n"))
+       ((not semantic-p)
+        (let ((plain (string-trim response)))
+          (unless (string-empty-p plain) plain)))))))
+
+(defun emacspeak-agent-shell--latest-agent-answer ()
+  "Return the latest rendered answer for the current agent-shell session."
+  (let ((shell-buffer (emacspeak-agent-shell--session-buffer)))
+    (with-current-buffer shell-buffer
+      (save-excursion
+        (condition-case nil
+            (progn
+              (agent-shell-goto-last-interaction)
+              (when-let* ((interaction
+                           (agent-shell-interaction-at-point))
+                          (response (map-elt interaction :response)))
+                (emacspeak-agent-shell--agent-answer-from-response
+                 response)))
+          (error nil))))))
+
+(defun emacspeak-agent-shell-speak-last-response ()
+  "Speak the latest agent answer in full without moving point."
+  (interactive)
+  (if-let ((answer (emacspeak-agent-shell--latest-agent-answer)))
+      (progn
+        (dtk-stop)
+        (emacspeak-icon 'item)
+        (dtk-speak answer))
+    (emacspeak-icon 'warn-user)
+    (dtk-speak "No agent response available.")))
 
 (defun emacspeak-agent-shell--concise-block-text (text)
   "Return a concise single-line version of block TEXT."
