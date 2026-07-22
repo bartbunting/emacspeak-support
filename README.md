@@ -6,6 +6,12 @@ extensions cover Corfu, Vertico, Which-Key, Markdown Mode, Helm, and
 agent-shell.  The repository also provides optional native Windows speech and
 auditory-icon support for Emacspeak running under WSL.
 
+This repository descends from Robert Melton's original
+[Emacspeak Support repository](https://github.com/robertmeta/emacspeak-support).
+That repository remains the source of the original project and its history;
+this fork carries the additional integrations and Windows support documented
+here.
+
 ## Installation
 
 Clone the repository and add it to `load-path` after Emacspeak has been set up:
