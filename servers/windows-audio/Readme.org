@@ -1,0 +1,63 @@
+* Native Windows auditory-icon player
+
+This player lets Emacspeak under WSL send auditory icons to native Windows
+audio, independently of the selected speech server.  A small Tcl wrapper uses
+a WSL-loopback socket to share one persistent Windows process.  No Windows
+firewall rule or administrator access is required.
+
+Emacspeak's OGG files are converted lazily to 48 kHz, 16-bit stereo WAV files
+under =$XDG_CACHE_HOME/emacspeak/windows-play=, or =~/.cache= when
+=XDG_CACHE_HOME= is unset.  SoX is used only for the first conversion of each
+file.  Generated SoX effects such as Emacspeak's multi-window cues are also
+rendered once and cached.  Playback uses independent Windows =waveOut= streams,
+so rapidly repeated icons mix and finish in real time instead of queuing.
+
+** Build
+
+From the =emacspeak-support= repository root in WSL:
+
+#+begin_src sh
+make windows-audio
+#+end_src
+
+Alternatively, build the component directly:
+
+#+begin_src sh
+cd servers/windows-audio
+make
+#+end_src
+
+The build uses the .NET Framework C# compiler included with Windows and adds
+no third-party dependency.
+
+** Configure Emacspeak
+
+After Emacspeak is loaded, add this to your Emacs configuration:
+
+#+begin_src emacs-lisp
+(let ((player
+       (expand-file-name
+        "servers/windows-play"
+        "/path/to/emacspeak-support/")))
+  (setenv "EMACSPEAK_PLAY" player)
+  (setq emacspeak-play-program nil
+        sox-play player))
+#+end_src
+
+Restart the speech server with =M-x tts-restart=.  Setting
+=emacspeak-play-program= to =nil= routes both immediate and queued icons
+through the speech server, while =EMACSPEAK_PLAY= makes every Tcl speech
+server use this wrapper.  Setting =sox-play= routes direct generated cues,
+which are separate from auditory icons, through native Windows audio as well.
+
+** Test and stop
+
+From the =emacspeak-support= root, provide the path to an Emacspeak sound:
+
+#+begin_src sh
+servers/windows-play /path/to/emacspeak/sounds/chimes/button.ogg
+servers/windows-play --stop
+#+end_src
+
+The first command starts the relay automatically.  The second stops both the
+relay and its native Windows child.

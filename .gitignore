@@ -26,6 +26,9 @@
 *-pkg.el
 dist/
 
+# Native Windows build artifacts
+/servers/windows-audio/bin/
+
 # Emacs desktop file
 .emacs.desktop
 .emacs.desktop.lock
