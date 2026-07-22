@@ -56,6 +56,11 @@ Third-party binaries are not stored in the =emacspeak-support= repository.
 The bridge itself is compiled with the .NET Framework C# compiler included
 with Windows; Visual Studio and DECtalk headers are not required.
 
+Windows prevents replacement of a bridge executable while it is running.
+Before rebuilding, select a different speech server with
+=M-x dtk-select-server=.  Build =windows-dtk=, then select it again.  Do not
+manually kill an Emacspeak bridge.
+
 To use a different compatible runtime, set =EMACSPEAK_DECTALK_DLL= to the
 Windows path of =DECtalk.dll=.  Its =dtalk_us.dic= must be in the same
 directory.
@@ -90,16 +95,27 @@ interrupt a longer utterance.  Type Control-D to close the server.
 
 ** Select it in Emacspeak
 
-Use the absolute support-repository path when selecting the server after
-Emacspeak is loaded:
+With this repository on =load-path=, load the integration after Emacspeak:
+
+#+begin_src emacs-lisp
+(require 'emacspeak-windows-speech)
+#+end_src
+
+Loading the integration does not change the active server.  It registers the
+short =windows-dtk= choice, which can be selected normally:
+
+#+begin_example
+M-x dtk-select-server RET windows-dtk RET
+#+end_example
+
+Alternatively, run =M-x emacspeak-windows-speech-select-dectalk=.  Without
+the integration, evaluate the following form, or use the same path as
+=dtk-program=:
 
 #+begin_src emacs-lisp
 (dtk-select-server
  "/path/to/emacspeak-support/servers/windows-dtk")
 #+end_src
-
-Alternatively, set the same absolute path as =dtk-program= before loading
-Emacspeak.
 
 The name contains =dtk=, so Emacspeak automatically selects the existing
 DECtalk personality mappings, rate range, and voice definitions.

@@ -31,4 +31,14 @@
 ;; extension also has emacspeak-support-enable-, -disable-, and -toggle-
 ;; commands, such as M-x emacspeak-support-toggle-agent-shell.
 
+;; Optional native Windows speech and auditory icons under WSL.  Loading this
+;; file registers windows-outloud and windows-dtk with dtk-select-server, but
+;; does not select an engine or change the audio route.
+;; (require 'emacspeak-windows-speech)
+;; (emacspeak-windows-speech-configure-audio)
+;; Use M-x dtk-select-server, or one of these direct commands:
+;; M-x emacspeak-windows-speech-select-eloquence
+;; M-x emacspeak-windows-speech-select-dectalk
+;; Run M-x emacspeak-windows-speech-diagnose to check the installation.
+
 ;;; example-config.el ends here

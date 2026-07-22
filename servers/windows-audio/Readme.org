@@ -28,11 +28,26 @@ make
 #+end_src
 
 The build uses the .NET Framework C# compiler included with Windows and adds
-no third-party dependency.
+no third-party dependency.  The build target stops its own running audio
+relay before replacing the executable.
 
 ** Configure Emacspeak
 
-After Emacspeak is loaded, add this to your Emacs configuration:
+The recommended setup uses the repository integration.  After Emacspeak is
+loaded and this repository is on =load-path=:
+
+#+begin_src emacs-lisp
+(require 'emacspeak-windows-speech)
+(emacspeak-windows-speech-configure-audio)
+#+end_src
+
+Loading =emacspeak-windows-speech= alone does not change the audio route.  The
+configuration command saves the existing settings so that
+=M-x emacspeak-windows-speech-restore-audio= can restore them.  Invoke either
+command with a prefix argument to restart the active speech server, or run
+=M-x tts-restart= separately.
+
+The equivalent manual configuration is:
 
 #+begin_src emacs-lisp
 (let ((player
@@ -44,11 +59,15 @@ After Emacspeak is loaded, add this to your Emacs configuration:
         sox-play player))
 #+end_src
 
-Restart the speech server with =M-x tts-restart=.  Setting
+Restart the speech server after manual configuration with =M-x tts-restart=.
+Setting
 =emacspeak-play-program= to =nil= routes both immediate and queued icons
 through the speech server, while =EMACSPEAK_PLAY= makes every Tcl speech
 server use this wrapper.  Setting =sox-play= routes direct generated cues,
 which are separate from auditory icons, through native Windows audio as well.
+
+Run =M-x emacspeak-windows-speech-diagnose= to check the WSL tools, SoX, Tclx,
+Emacspeak library, and built bridges.
 
 ** Test and stop
 

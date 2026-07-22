@@ -3,14 +3,15 @@
 This repository provides independently loadable Emacspeak speech interfaces
 for packages that are not fully supported in Emacspeak itself.  The current
 extensions cover Corfu, Vertico, Which-Key, Markdown Mode, Helm, and
-agent-shell.
+agent-shell.  The repository also provides optional native Windows speech and
+auditory-icon support for Emacspeak running under WSL.
 
 ## Installation
 
 Clone the repository and add it to `load-path` after Emacspeak has been set up:
 
 ```bash
-git clone https://github.com/robertmeta/emacspeak-support.git
+git clone https://github.com/bartbunting/emacspeak-support.git
 ```
 
 ```elisp
@@ -213,12 +214,97 @@ loaded, evaluate:
 (symbol-file 'emacspeak-agent-shell-enable)
 ```
 
+### Native Windows Speech and Audio Under WSL
+
+The Windows support keeps its launchers in this repository: it does not copy
+them into Emacspeak's `servers` directory or alter Emacspeak's `.servers`
+file.  The integration adds the short names `windows-outloud` and
+`windows-dtk` to `dtk-select-server`, then translates only those names to this
+checkout's absolute paths.
+
+Build whichever components you need from the repository root:
+
+```bash
+make windows-audio
+make windows-outloud
+make windows-dtk
+```
+
+`windows-audio` builds native auditory-icon playback.  `windows-outloud`
+builds the Eloquence bridge but requires an existing licensed Windows
+Eloquence installation at run time; no proprietary Eloquence files are
+included.  `windows-dtk` downloads the pinned DECtalk 2023-10-30 IA32 runtime,
+verifies its SHA-256 digest, and extracts it into an ignored build directory.
+Neither generated executables nor the DECtalk runtime are committed.
+
+After Emacspeak is initialized, load the integration:
+
+```elisp
+(require 'emacspeak-windows-speech)
+```
+
+Loading it only registers the friendly server choices.  It does not change
+the active speech server or audio configuration.  Select a server through the
+usual prompt:
+
+```text
+M-x dtk-select-server RET windows-outloud RET
+M-x dtk-select-server RET windows-dtk RET
+```
+
+The dedicated commands
+`emacspeak-windows-speech-select-eloquence` and
+`emacspeak-windows-speech-select-dectalk` perform the same selections without
+prompting.  When the integration is not loaded, an absolute launcher path can
+still be passed directly from Lisp, for example:
+
+```elisp
+(dtk-select-server
+ "/path/to/emacspeak-support/servers/windows-outloud")
+```
+
+Configure native Windows auditory-icon playback with:
+
+```text
+M-x emacspeak-windows-speech-configure-audio
+```
+
+This saves the current Emacspeak audio settings so that
+`emacspeak-windows-speech-restore-audio` can restore them.  Use a prefix
+argument, for example
+`C-u M-x emacspeak-windows-speech-configure-audio`, to restart the active
+speech server immediately; otherwise run `M-x tts-restart` when convenient.
+The restore command accepts the same prefix argument.
+
+Run `M-x emacspeak-windows-speech-diagnose` to report WSL tools, Tclx, SoX,
+Emacspeak's Tcl library, built bridges, and the DECtalk runtime.  Run
+`M-x emacspeak-windows-speech-disable` to remove the selection advice and the
+friendly names that this integration added.  Disabling selection does not
+switch the current server or restore audio; use the restore command separately
+when required.
+
+Windows locks a running speech bridge executable.  Before rebuilding
+`windows-outloud` or `windows-dtk`, use `dtk-select-server` to select the other
+engine or another speech server.  Rebuild, then select the desired engine
+again.  Do not manually kill an Emacspeak bridge.  The `windows-audio` build
+target safely stops its own player process before rebuilding.
+
+The component guides contain architecture, setup, and direct-test details:
+
+- [native Windows audio](servers/windows-audio/Readme.org)
+- [Windows Eloquence](servers/windows-eloquence/Readme.org)
+- [Windows Software DECtalk](servers/windows-dectalk/Readme.org)
+
 ## Requirements and Compatibility
 
 - Emacspeak.  The currently inspected Emacspeak release requires Emacs 29.1
   or later.
 - The target package for each enabled extension.
 - Current agent-shell declares Emacs 29.1, shell-maker 0.93.5, and ACP 0.13.1.
+- Native Windows speech requires WSL, Tcl/Tclx, `powershell.exe`, `wslpath`,
+  SoX, and the .NET Framework C# compiler included with Windows.  Each speech
+  engine also needs the corresponding separately licensed runtime described
+  above.
 
 The agent-shell integration is currently developed and replay-tested with
 Emacs 30.2.  Its exact audited revisions are recorded in the accessibility
@@ -234,10 +320,9 @@ Run the deterministic agent-shell suite with:
 emacs --batch -Q -l tests/run-tests.el
 ```
 
-See [tests/README.md](tests/README.md) for paths and suite details,
-[AGENTS.md](AGENTS.md) for the layered speech-testing methodology, and
-[CONTRIBUTING.md](CONTRIBUTING.md) for extension design and contribution
-guidance.
+See [tests/README.md](tests/README.md) for paths and suite details and
+[CONTRIBUTING.md](CONTRIBUTING.md) for extension design, layered speech
+testing, and contribution guidance.
 
 ## License
 

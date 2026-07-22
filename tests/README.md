@@ -29,5 +29,6 @@ API/face drift, and teardown.  All checked-in tests are normal regression tests
 and are expected to pass.
 
 For end-to-end speech-server logging and manual-listening methodology, see
-[../AGENTS.md](../AGENTS.md).  The audited external revisions are recorded in
+[../CONTRIBUTING.md](../CONTRIBUTING.md).  The audited external revisions are
+recorded in
 [../agent-shell-accessibility-plan.md](../agent-shell-accessibility-plan.md).

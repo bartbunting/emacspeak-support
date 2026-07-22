@@ -14,9 +14,6 @@ state and available actions understandable through speech, not merely audible.
   task explicitly includes changing them.
 - Preserve unrelated local changes.
 
-The repository's detailed working and testing rules are in
-[AGENTS.md](AGENTS.md).
-
 ## Design Principles
 
 - Prefer public hooks, events, and commands over advice on private functions.
@@ -135,12 +132,22 @@ Test in layers; loading successfully is only the first layer.
    compare the protocol log with an expected transcript.
 5. Finish high-impact speech changes by listening with a normal speech server.
 
-The exact logging-server command, privacy cautions, and required scenarios are
-documented in [AGENTS.md](AGENTS.md).  Agent-shell test commands and path
-overrides are in [tests/README.md](tests/README.md).
+For a logged-speech test, use a separate clean Emacs session with Emacspeak
+loaded.  Run `C-e d d` (`dtk-select-server`) and choose the `log-` variant of
+the engine being tested, such as `log-outloud`.  The wrapper records the
+server protocol in a new `/tmp/ENGINE-PID.log` file while forwarding it to the
+underlying engine.  Perform one bounded scenario, switch back to the normal
+server (or use `emacspeak-emergency-tts-restart`), and inspect the newest
+matching log for spoken text, voice changes, stop commands, and auditory
+icons.
 
-Do not commit raw speech logs or ACP traffic: they may contain prompts, source
-text, paths, tokens, or agent responses.
+Exercise focus changes, navigation in both directions, asynchronous updates,
+completion, interruption, and enable/disable cycles as relevant to the
+change.  Repeat high-impact cases with the normal speech server and listen to
+the result.  Speech logs and ACP traffic may contain prompts, source text,
+paths, tokens, or agent responses; redact fixtures and never commit raw logs.
+Agent-shell test commands and path overrides are in
+[tests/README.md](tests/README.md).
 
 ## Reference Extensions
 

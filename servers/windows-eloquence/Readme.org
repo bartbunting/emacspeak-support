@@ -55,6 +55,11 @@ The build uses the 64-bit .NET Framework C# compiler included with Windows;
 it produces both executables under =servers/windows-eloquence/bin=.  No ECI
 headers, libraries, or additional .NET SDK are required at build time.
 
+Windows prevents replacement of a bridge executable while it is running.
+Before rebuilding, select a different speech server with
+=M-x dtk-select-server=.  Build =windows-outloud=, then select it again.  Do
+not manually kill an Emacspeak bridge.
+
 To use a different installed ECI library, set =EMACSPEAK_ECI_DLL= to its
 Windows path before starting the server.
 
@@ -84,16 +89,27 @@ Control-D to close the server.
 
 ** Select it in Emacspeak
 
-Use the absolute support-repository path when selecting the server after
-Emacspeak is loaded:
+With this repository on =load-path=, load the integration after Emacspeak:
+
+#+begin_src emacs-lisp
+(require 'emacspeak-windows-speech)
+#+end_src
+
+Loading the integration does not change the active server.  It registers the
+short =windows-outloud= choice, which can be selected normally:
+
+#+begin_example
+M-x dtk-select-server RET windows-outloud RET
+#+end_example
+
+Alternatively, run
+=M-x emacspeak-windows-speech-select-eloquence=.  Without the integration,
+evaluate the following form, or use the same path as =dtk-program=:
 
 #+begin_src emacs-lisp
 (dtk-select-server
  "/path/to/emacspeak-support/servers/windows-outloud")
 #+end_src
-
-Alternatively, set the same absolute path as =dtk-program= before loading
-Emacspeak.
 
 Because the server name contains =outloud=, Emacspeak automatically uses the
 existing Eloquence personality and ACSS voice mappings.

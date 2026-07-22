@@ -479,7 +479,8 @@ complete discoverable speech paths.
 
 ## Verification Matrix
 
-Each phase should use the methodology in `AGENTS.md`:
+Each phase should use the public testing methodology in
+[`CONTRIBUTING.md`](CONTRIBUTING.md):
 
 1. `check-parens`, byte compilation, batch load, and enable/disable checks;
 2. ERT assertions over ordered speech, interruption, and icon calls;
