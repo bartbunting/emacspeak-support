@@ -23,8 +23,27 @@ proc windows_speech_source_tts_library {server_directory} {
     error "Emacspeak tts-lib.tcl not found; set EMACSPEAK_DIR to the Emacspeak root"
 }
 
+proc windows_speech_export_to_windows {name} {
+    global env
+    set entries {}
+    if {[info exists env(WSLENV)] && $env(WSLENV) ne ""} {
+        foreach entry [split $env(WSLENV) :] {
+            if {[lindex [split $entry /] 0] ne $name} {
+                lappend entries $entry
+            }
+        }
+    }
+    lappend entries "$name/w"
+    set env(WSLENV) [join $entries :]
+}
+
 proc windows_speech_start {state_name description program arguments} {
+    global env
     upvar #0 $state_name state
+    if {[info exists env(EMACSPEAK_WINDOWS_SPEECH_PAN)] &&
+        $env(EMACSPEAK_WINDOWS_SPEECH_PAN) ne ""} {
+        windows_speech_export_to_windows EMACSPEAK_WINDOWS_SPEECH_PAN
+    }
     set command [list | $program]
     foreach argument $arguments {
         lappend command $argument

@@ -1,8 +1,9 @@
 # Tests
 
-The agent-shell tests use deterministic collectors for speech, interruption,
-auditory icons, and messages.  They read agent-shell's checked-in traffic
-fixtures but do not start an agent or make network requests.
+The tests use deterministic collectors for speech, interruption, auditory
+icons, messages, and Windows notification-stream setup.  They read
+agent-shell's checked-in traffic fixtures but do not start an agent, speech
+server, or network request.
 
 From the repository root, run:
 

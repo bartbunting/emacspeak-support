@@ -5,6 +5,7 @@
 // See the file COPYING in this distribution.
 
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -67,9 +68,6 @@ internal static class NativeWaveOut
     [DllImport("winmm.dll", CallingConvention = CallingConvention.Winapi)]
     internal static extern int waveOutClose(IntPtr handle);
 
-    [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")]
-    internal static extern void CopyMemory(IntPtr destination,
-        IntPtr source, UIntPtr length);
 }
 
 internal sealed class WaveOutPlayer : IDisposable
@@ -84,12 +82,18 @@ internal sealed class WaveOutPlayer : IDisposable
     private const int BufferCount = 3;
     private const int SilenceThreshold = 8;
     private const int LeadingAudioPrerollSamples = 16;
+    private const int FullGain = 32768;
+    private const string PanEnvironmentVariable =
+        "EMACSPEAK_WINDOWS_SPEECH_PAN";
 
     private readonly object syncRoot = new object();
     private readonly AutoResetEvent bufferChanged = new AutoResetEvent(false);
     private readonly BufferSlot[] buffers;
     private readonly int sampleRate;
+    private readonly int sourceBufferCapacity;
     private readonly int bufferCapacity;
+    private readonly int leftGain;
+    private readonly int rightGain;
     private readonly uint headerSize;
     private IntPtr handle;
     private int pendingBuffers;
@@ -98,17 +102,25 @@ internal sealed class WaveOutPlayer : IDisposable
     internal WaveOutPlayer(int sampleRate, int channels, int bitsPerSample,
         int bufferCapacityBytes)
     {
+        if (channels != 1 || bitsPerSample != 16)
+        {
+            throw new ArgumentException(
+                "Stereo positioning requires 16-bit mono source audio");
+        }
+
         this.sampleRate = sampleRate;
-        bufferCapacity = bufferCapacityBytes;
+        sourceBufferCapacity = bufferCapacityBytes;
+        bufferCapacity = checked(bufferCapacityBytes * 2);
+        SetPanGains(ReadPan(), out leftGain, out rightGain);
         headerSize = (uint)Marshal.SizeOf(typeof(NativeWaveOut.WaveHeader));
         buffers = new BufferSlot[BufferCount];
 
         NativeWaveOut.WaveFormat format = new NativeWaveOut.WaveFormat();
         format.FormatTag = 1;
-        format.Channels = (ushort)channels;
+        format.Channels = 2;
         format.SamplesPerSecond = (uint)sampleRate;
         format.BitsPerSample = (ushort)bitsPerSample;
-        format.BlockAlign = (ushort)(channels * bitsPerSample / 8);
+        format.BlockAlign = (ushort)(2 * bitsPerSample / 8);
         format.AverageBytesPerSecond =
             format.SamplesPerSecond * format.BlockAlign;
         format.ExtraSize = 0;
@@ -165,7 +177,7 @@ internal sealed class WaveOutPlayer : IDisposable
 
         int sampleCount = checked(
             (sampleRate * durationMilliseconds + 999) / 1000);
-        if (checked(sampleCount * 2) > bufferCapacity)
+        if (checked(sampleCount * 2) > sourceBufferCapacity)
         {
             throw new ArgumentOutOfRangeException("durationMilliseconds",
                 "Tone duration exceeds the native playback buffer");
@@ -209,12 +221,12 @@ internal sealed class WaveOutPlayer : IDisposable
 
     internal void Feed(IntPtr source, int sampleCount)
     {
-        int byteCount = checked(sampleCount * 2);
-        if (byteCount <= 0)
+        int sourceByteCount = checked(sampleCount * 2);
+        if (sourceByteCount <= 0)
         {
             return;
         }
-        if (byteCount > bufferCapacity)
+        if (sourceByteCount > sourceBufferCapacity)
         {
             throw new InvalidOperationException(
                 "Speech engine returned more PCM data than the playback buffer can hold");
@@ -230,13 +242,13 @@ internal sealed class WaveOutPlayer : IDisposable
             firstAudioSample = Math.Max(0,
                 firstAudioSample - LeadingAudioPrerollSamples);
             source = IntPtr.Add(source, firstAudioSample * 2);
-            byteCount -= firstAudioSample * 2;
+            sampleCount -= firstAudioSample;
             trimLeadingSilence = false;
         }
 
+        int byteCount = checked(sampleCount * 4);
         BufferSlot buffer = AcquireBuffer();
-        NativeWaveOut.CopyMemory(buffer.Data, source,
-            new UIntPtr((uint)byteCount));
+        CopyPannedSamples(buffer.Data, source, sampleCount);
 
         NativeWaveOut.WaveHeader header = new NativeWaveOut.WaveHeader();
         header.Data = buffer.Data;
@@ -383,6 +395,55 @@ internal sealed class WaveOutPlayer : IDisposable
             }
         }
         return sampleCount;
+    }
+
+    private void CopyPannedSamples(IntPtr destination, IntPtr source,
+        int sampleCount)
+    {
+        for (int index = 0; index < sampleCount; ++index)
+        {
+            int sample = Marshal.ReadInt16(source, index * 2);
+            int outputOffset = index * 4;
+            Marshal.WriteInt16(destination, outputOffset,
+                (short)(sample * leftGain / FullGain));
+            Marshal.WriteInt16(destination, outputOffset + 2,
+                (short)(sample * rightGain / FullGain));
+        }
+    }
+
+    private static double ReadPan()
+    {
+        string value = Environment.GetEnvironmentVariable(
+            PanEnvironmentVariable);
+        if (String.IsNullOrEmpty(value))
+        {
+            return 0.0;
+        }
+
+        double pan;
+        if (!Double.TryParse(value, NumberStyles.Float,
+            CultureInfo.InvariantCulture, out pan) || Double.IsNaN(pan) ||
+            Double.IsInfinity(pan) || pan < -1.0 || pan > 1.0)
+        {
+            throw new InvalidOperationException(
+                PanEnvironmentVariable +
+                " must be a number between -1.0 and 1.0");
+        }
+        return pan;
+    }
+
+    private static void SetPanGains(double pan, out int left, out int right)
+    {
+        if (pan < 0.0)
+        {
+            left = FullGain;
+            right = (int)Math.Round((1.0 + pan) * FullGain);
+        }
+        else
+        {
+            left = (int)Math.Round((1.0 - pan) * FullGain);
+            right = FullGain;
+        }
     }
 
     private static void Check(int result, string operation)

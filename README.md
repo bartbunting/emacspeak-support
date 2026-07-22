@@ -258,6 +258,22 @@ M-x dtk-select-server RET windows-outloud RET
 M-x dtk-select-server RET windows-dtk RET
 ```
 
+Both Windows servers automatically start a second, independent speech process
+for Emacspeak's notification stream.  The main and notification streams use
+separate native bridge instances and can interrupt independently while Windows
+mixes both through its default output device.  Set
+`emacspeak-windows-speech-enable-notification-stream` to `nil` and restart the
+speech server to disable the additional stream.
+
+Speech is rendered as stereo so the streams can occupy distinct positions.
+The main stream is centered by default, while notifications are positioned
+65 percent to the right.  Customize
+`emacspeak-windows-speech-main-pan` and
+`emacspeak-windows-speech-notification-pan` from `-1.0` (fully left) through
+`0.0` (center) to `1.0` (fully right), then restart the speech server.  This
+positions synthesized speech and its native tones; auditory icons keep their
+independent audio-player routing.
+
 The dedicated commands
 `emacspeak-windows-speech-select-eloquence` and
 `emacspeak-windows-speech-select-dectalk` perform the same selections without

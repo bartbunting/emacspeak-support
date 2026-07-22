@@ -21,6 +21,11 @@ x64-to-x86 launcher, and low-latency =waveOut= player under
 =servers/windows-speech-common=.  Their synthesizer APIs and Emacspeak
 front-ends remain separate.
 
+The shared player converts the engine's mono PCM to stereo.  When launched by
+the repository integration, main speech is centered and notification speech
+is positioned to the right by default; both positions are customizable in
+Emacs before restarting the server.
+
 Character echo uses a one-character forced utterance.  This is necessary
 because DECtalk's =TextToSpeechTyping= API loses the new character when it
 immediately follows Emacspeak's normal stop command.  Each character still
@@ -29,10 +34,11 @@ old letters queued after input stops.  DECtalk's existing inline tone commands
 continue to provide blank-line and capital cues in the same PCM stream as
 speech.
 
-The Tcl front-end also coalesces rapid input.  If a newer Emacs command is
-already waiting, an obsolete character echo or queued utterance is discarded
-before synthesis.  This prevents held Backspace and fast line navigation from
-being replayed after the key is released while retaining the newest event.
+The Tcl front-end also coalesces rapid character input.  If a newer Emacs
+command is already waiting, an obsolete character echo is discarded before
+synthesis.  Normal queued utterances are submitted in command order and use
+Emacspeak's standard stop command for interruption; a following command such
+as an auditory icon does not discard queued speech.
 
 ** Build
 

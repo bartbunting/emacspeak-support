@@ -34,6 +34,30 @@
   :type 'directory
   :group 'emacspeak-windows-speech)
 
+(defcustom emacspeak-windows-speech-enable-notification-stream t
+  "Whether Windows speech servers use a separate notification stream.
+The notification stream uses a second server and native bridge process, so
+notifications can speak independently of the main speech stream.  Changes
+take effect the next time the speech server is selected or restarted."
+  :type 'boolean
+  :group 'emacspeak-windows-speech)
+
+(defcustom emacspeak-windows-speech-main-pan 0.0
+  "Stereo position of the main Windows speech stream.
+-1.0 is fully left, 0.0 is centered, and 1.0 is fully right.  Values
+outside that range are clamped when the speech process starts.  Changes
+take effect the next time the speech server is selected or restarted."
+  :type 'number
+  :group 'emacspeak-windows-speech)
+
+(defcustom emacspeak-windows-speech-notification-pan 0.65
+  "Stereo position of the Windows notification speech stream.
+-1.0 is fully left, 0.0 is centered, and 1.0 is fully right.  Values
+outside that range are clamped when the notification process starts.
+Changes take effect when the speech server is selected or restarted."
+  :type 'number
+  :group 'emacspeak-windows-speech)
+
 (defconst emacspeak-windows-speech--server-files
   '(("windows-outloud" . "windows-outloud")
     ("windows-dtk" . "windows-dtk"))
@@ -47,6 +71,13 @@
 
 (defvar emacspeak-windows-speech--saved-audio-state nil
   "Audio configuration saved before enabling native Windows playback.")
+
+(defconst emacspeak-windows-speech--notification-device "windows-default"
+  "Internal device name that enables Emacspeak's notification process.")
+
+(defconst emacspeak-windows-speech--pan-environment-variable
+  "EMACSPEAK_WINDOWS_SPEECH_PAN"
+  "Environment variable passed to a native Windows speech bridge.")
 
 (defun emacspeak-windows-speech--server-path (name)
   "Return the absolute support server path for friendly NAME."
@@ -70,6 +101,61 @@
           (cons path (cdr arguments)))
       arguments)))
 
+(defun emacspeak-windows-speech--server-p (program)
+  "Return non-nil when PROGRAM names one of the Windows speech servers."
+  (and
+   (stringp program)
+   (member
+    (file-name-nondirectory program)
+    (mapcar #'cdr emacspeak-windows-speech--server-files))))
+
+(defun emacspeak-windows-speech--with-notification-stream
+    (original &rest arguments)
+  "Call ORIGINAL with Windows notification-stream support enabled.
+ARGUMENTS are the original arguments to `dtk-initialize'."
+  (cl-declare
+   (special dtk-program tts-multi-engines tts-notification-device))
+  (if
+      (not
+       (and emacspeak-windows-speech-enable-notification-stream
+            (emacspeak-windows-speech--server-p dtk-program)))
+      (apply original arguments)
+    (let
+        ((tts-multi-engines
+          (append
+           '("windows-outloud" "windows-dtk") tts-multi-engines))
+         (tts-notification-device
+          (if
+              (and
+               (stringp tts-notification-device)
+               (> (length tts-notification-device) 0)
+               (not (string= tts-notification-device "default")))
+              tts-notification-device
+            emacspeak-windows-speech--notification-device)))
+      (apply original arguments))))
+
+(defun emacspeak-windows-speech--clamp-pan (pan)
+  "Return numeric PAN constrained to the inclusive range -1.0 to 1.0."
+  (setq pan (if (numberp pan) (float pan) 0.0))
+  (max -1.0 (min 1.0 pan)))
+
+(defun emacspeak-windows-speech--with-stereo-position
+    (original name &rest arguments)
+  "Call ORIGINAL to start speech process NAME at its stereo position.
+ARGUMENTS are any remaining arguments to `dtk-make-process'."
+  (cl-declare (special dtk-program process-environment))
+  (if (not (emacspeak-windows-speech--server-p dtk-program))
+      (apply original name arguments)
+    (let ((process-environment (copy-sequence process-environment))
+          (pan
+           (if (string= name "Notify")
+               emacspeak-windows-speech-notification-pan
+             emacspeak-windows-speech-main-pan)))
+      (setenv
+       emacspeak-windows-speech--pan-environment-variable
+       (number-to-string (emacspeak-windows-speech--clamp-pan pan)))
+      (apply original name arguments))))
+
 (defun emacspeak-windows-speech--register-server-names ()
   "Add friendly Windows server names to Emacspeak completion."
   (cl-declare (special dtk-servers-alist))
@@ -87,15 +173,29 @@
   (interactive)
   (unless emacspeak-windows-speech--enabled
     (setq emacspeak-windows-speech--added-server-names nil)
-    (emacspeak-windows-speech--register-server-names)
-    (unless
-        (advice-member-p
-         #'emacspeak-windows-speech--resolve-server-arguments
-         'dtk-select-server)
-      (advice-add
-       'dtk-select-server :filter-args
-       #'emacspeak-windows-speech--resolve-server-arguments))
-    (setq emacspeak-windows-speech--enabled t))
+    (emacspeak-windows-speech--register-server-names))
+  (unless
+      (advice-member-p
+       #'emacspeak-windows-speech--resolve-server-arguments
+       'dtk-select-server)
+    (advice-add
+     'dtk-select-server :filter-args
+     #'emacspeak-windows-speech--resolve-server-arguments))
+  (unless
+      (advice-member-p
+       #'emacspeak-windows-speech--with-notification-stream
+       'dtk-initialize)
+    (advice-add
+     'dtk-initialize :around
+     #'emacspeak-windows-speech--with-notification-stream))
+  (unless
+      (advice-member-p
+       #'emacspeak-windows-speech--with-stereo-position
+       'dtk-make-process)
+    (advice-add
+     'dtk-make-process :around
+     #'emacspeak-windows-speech--with-stereo-position))
+  (setq emacspeak-windows-speech--enabled t)
   (when (called-interactively-p 'interactive)
     (emacspeak-icon 'on)
     (message "Enabled native Windows speech server selection")))
@@ -111,6 +211,20 @@
     (advice-remove
      'dtk-select-server
      #'emacspeak-windows-speech--resolve-server-arguments))
+  (when
+      (advice-member-p
+       #'emacspeak-windows-speech--with-notification-stream
+       'dtk-initialize)
+    (advice-remove
+     'dtk-initialize
+     #'emacspeak-windows-speech--with-notification-stream))
+  (when
+      (advice-member-p
+       #'emacspeak-windows-speech--with-stereo-position
+       'dtk-make-process)
+    (advice-remove
+     'dtk-make-process
+     #'emacspeak-windows-speech--with-stereo-position))
   (dolist (name emacspeak-windows-speech--added-server-names)
     (setq dtk-servers-alist (delete name dtk-servers-alist)))
   (setq emacspeak-windows-speech--added-server-names nil

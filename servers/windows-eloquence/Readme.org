@@ -23,6 +23,11 @@ shared with the native Windows DECtalk backend under
 =servers/windows-speech-common=.  ECI-specific synthesis and tone-index
 handling remain in this directory.
 
+The shared player converts the engine's mono PCM to stereo.  When launched by
+the repository integration, main speech is centered and notification speech
+is positioned to the right by default; both positions are customizable in
+Emacs before restarting the server.
+
 Character echo interrupts older character speech while leaving the current
 deletion tone intact.  This prevents rapid typing or held Backspace from
 building an uninterruptible queue of letters.  Each new standalone tone also
