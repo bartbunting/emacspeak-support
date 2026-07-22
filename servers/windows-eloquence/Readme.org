@@ -1,0 +1,107 @@
+* Windows Eloquence speech server
+
+This backend lets Emacspeak running under WSL use a native Windows
+installation of Eloquence through its 32-bit ECI API.  It does not include or
+copy Eloquence.  By default it loads the ECI library installed at:
+
+#+begin_example
+C:\Program Files (x86)\Freedom Scientific\Shared\Eloquence\6.1\ECI.DLL
+#+end_example
+
+The standalone =windows-outloud= server contains its own Emacspeak queue,
+punctuation, voice, and command-loop code.  It does not source or modify the
+Unix =outloud= server.  The x64 =EloquenceBridge.exe= is launchable from WSL
+and relays commands to the x86 =EloquenceBridge32.exe= process that owns ECI.
+The bridge receives small PCM buffers from Eloquence and queues them to the
+default Windows output device.  Explicit end-of-utterance indexes keep rapid
+stop-and-speak cycles responsive even when ECI's generic speaking flag remains
+set.  Server tones also use native Windows playback, avoiding the SoX-to-WSLg
+path.
+
+The Base64 line protocol, x64-to-x86 launcher, and =waveOut= PCM player are
+shared with the native Windows DECtalk backend under
+=servers/windows-speech-common=.  ECI-specific synthesis and tone-index
+handling remain in this directory.
+
+Character echo interrupts older character speech while leaving the current
+deletion tone intact.  This prevents rapid typing or held Backspace from
+building an uninterruptible queue of letters.  Each new standalone tone also
+replaces the previous one, so rapid deletion cues cannot fill the tone buffers
+and delay subsequent character commands.  If newer commands are already
+waiting, obsolete character echoes are discarded; the newest character still
+speaks once the input stream catches up.
+
+When Emacspeak's caps indication is enabled, capitalized and camel-case
+segments receive the standard 440 Hz cue.  Entirely uppercase words receive
+the higher 1300 Hz cue.  ECI indexes place these cues inside a continuous
+utterance; single-character echo retains Eloquence's normal pitch change.
+
+** Build
+
+From the =emacspeak-support= repository root in WSL:
+
+#+begin_src sh
+make windows-outloud
+#+end_src
+
+Alternatively, build it directly with its standalone Makefile:
+
+#+begin_src sh
+cd servers/windows-eloquence
+make
+#+end_src
+
+The build uses the 64-bit .NET Framework C# compiler included with Windows;
+it produces both executables under =servers/windows-eloquence/bin=.  No ECI
+headers, libraries, or additional .NET SDK are required at build time.
+
+To use a different installed ECI library, set =EMACSPEAK_ECI_DLL= to its
+Windows path before starting the server.
+
+The server uses a sibling =tts-lib.tcl= when run from an Emacspeak source
+tree.  When installed elsewhere, it uses
+=$EMACSPEAK_DIR/servers/tts-lib.tcl=.  Normal Emacspeak startup sets
+=EMACSPEAK_DIR= automatically.  Set it explicitly when testing an external
+server without first starting Emacspeak.
+
+** Test outside Emacs
+
+Set the Emacspeak source location, run the server, and then type the test
+commands, pressing Return after each:
+
+#+begin_src sh
+EMACSPEAK_DIR=/path/to/emacspeak ./servers/windows-outloud
+#+end_src
+
+#+begin_example
+q {This is native Windows Eloquence.}
+d
+s
+#+end_example
+
+The =s= command should interrupt a longer utterance immediately.  Type
+Control-D to close the server.
+
+** Select it in Emacspeak
+
+Use the absolute support-repository path when selecting the server after
+Emacspeak is loaded:
+
+#+begin_src emacs-lisp
+(dtk-select-server
+ "/path/to/emacspeak-support/servers/windows-outloud")
+#+end_src
+
+Alternatively, set the same absolute path as =dtk-program= before loading
+Emacspeak.
+
+Because the server name contains =outloud=, Emacspeak automatically uses the
+existing Eloquence personality and ACSS voice mappings.
+
+** Internal bridge protocol
+
+The bridge accepts one ASCII request per line and returns exactly one =OK= or
+=ERR= response.  Text for =ADD= is UTF-8 encoded and then Base64 wrapped.
+Supported commands are =PING=, =VERSION=, =ADD=, =SYNTH=, =SPEAKING=,
+=STOP=, =STOP_SPEECH=, =PAUSE=, =SYNC=, =RESET=, =INDEX=, =TONE=, =INDEX_TONE=,
+=GET_RATE=, =SET_RATE=, and =QUIT=.

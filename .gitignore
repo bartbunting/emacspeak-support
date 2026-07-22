@@ -28,6 +28,7 @@ dist/
 
 # Native Windows build artifacts
 /servers/windows-audio/bin/
+/servers/windows-eloquence/bin/
 
 # Emacs desktop file
 .emacs.desktop
