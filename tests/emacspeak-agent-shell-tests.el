@@ -1509,6 +1509,45 @@ Return speech events plus the target character.  DIRECTION is `forward' or
         (emacspeak-agent-shell--filter-vertical-toggle-hint))
       (should (equal ems--message-filter "original")))))
 
+(ert-deftest emacspeak-agent-shell-visual-lines-cue-blank-content ()
+  "Visual-line speech should preserve Emacspeak's two blank-line pitches."
+  (dolist (case '((agent-shell-mode "" 130.8)
+                  (agent-shell-mode "  " 261.6)
+                  (agent-shell-viewport-view-mode "" 130.8)
+                  (agent-shell-viewport-edit-mode "\t" 261.6)
+                  (agent-shell-mode "content" nil)
+                  (fundamental-mode "" nil)))
+    (let ((buffer (generate-new-buffer " *agent-shell-visual-line-test*"))
+          events)
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buffer)
+            (insert (nth 1 case))
+            (goto-char (point-min))
+            (setq major-mode (nth 0 case))
+            (visual-line-mode 1)
+            (cl-letf (((symbol-function 'dtk-speak)
+                       (lambda (_text)
+                         (push '(speak) events)))
+                      ((symbol-function 'dtk-stop)
+                       (lambda (&optional all)
+                         (push (list 'stop all) events)))
+                      ((symbol-function 'dtk-tone)
+                       (lambda (pitch duration &optional force)
+                         (push (list 'tone pitch duration force) events)))
+                      ((symbol-function 'emacspeak-icon) #'ignore))
+              (emacspeak-speak-visual-line))
+            (should
+             (equal
+              (nreverse events)
+              (if (nth 2 case)
+                  `((stop all)
+                    (speak)
+                    (tone ,(nth 2 case) 150 force))
+                '((speak))))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest emacspeak-agent-shell-toggle-filter-restores-after-sensors ()
   "Restore the original filter after agent-shell's cursor sensors run."
   (with-temp-buffer

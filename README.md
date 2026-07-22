@@ -130,6 +130,8 @@ asynchronous, multi-session interface.  It currently includes:
 - voices for current agent-shell interface and rendered Markdown faces;
 - semantic status words for faced plan/status icons while leaving ordinary
   ellipses unchanged;
+- standard empty-line and whitespace-only tones while shell-maker's visual-line
+  wrapping is active;
 - typed transcript navigation for responses, prompts, thoughts, activity
   groups, tools, plans, permissions, errors, source blocks, and rendered
   tables;

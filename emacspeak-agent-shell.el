@@ -1487,6 +1487,39 @@ Returns one of: \\='agent-message, \\='user-message, \\='thought,
 
 ;;;  Advice Agent-Shell Functions
 
+(defun emacspeak-agent-shell--blank-visual-line-pitch ()
+  "Return the Emacspeak blank-line pitch at the current visual line.
+Return nil outside agent-shell buffers or when the visual line contains
+non-whitespace text."
+  (when (derived-mode-p 'agent-shell-mode
+                        'agent-shell-viewport-view-mode
+                        'agent-shell-viewport-edit-mode)
+    (save-excursion
+      (beginning-of-visual-line)
+      (let ((start (point)))
+        (end-of-visual-line)
+        (let ((line (buffer-substring-no-properties start (point))))
+          (cond
+           ((string-empty-p line)
+            (let ((physical-line
+                   (buffer-substring-no-properties
+                    (line-beginning-position) (line-end-position))))
+              (cond
+               ((string-empty-p physical-line) 130.8)
+               ((string-match-p
+                 "\\`[[:space:]]+\\'" physical-line)
+                261.6))))
+           ((string-match-p "\\`[[:space:]]+\\'" line) 261.6)))))))
+
+(defadvice emacspeak-speak-visual-line (around emacspeak pre act comp)
+  "Add standard blank-line tones to visual-line speech in agent-shell."
+  (let ((pitch (emacspeak-agent-shell--blank-visual-line-pitch)))
+    (when pitch
+      (dtk-stop 'all))
+    ad-do-it
+    (when pitch
+      (dtk-tone pitch 150 'force))))
+
 (defadvice dtk-speak (around emacspeak pre act comp)
   "Preserve rendered Markdown properties while speaking agent-shell content.
 This changes only the temporary speech string; agent-shell's clipboard handler
@@ -3916,7 +3949,8 @@ DISMISS means the compose window is dismissed."
 ;;;  Enable/Disable support:
 
 (defvar emacspeak-agent-shell--advice-list
-  '((dtk-speak around)
+  '((emacspeak-speak-visual-line around)
+    (dtk-speak around)
     (emacspeak-speak-mode-line around)
     (emacspeak-speak-header-line around)
     (agent-shell after)
@@ -3951,6 +3985,15 @@ DISMISS means the compose window is dismissed."
                  emacspeak-agent-shell--advice-list)))
     (setcdr entry '(around))
   (push '(agent-shell-viewport-compose-send around)
+        emacspeak-agent-shell--advice-list))
+
+;; `defvar' preserves the advice list when this development file is reloaded.
+;; Add this target explicitly for sessions that loaded an earlier version.
+(if-let* ((entry
+           (assq 'emacspeak-speak-visual-line
+                 emacspeak-agent-shell--advice-list)))
+    (setcdr entry '(around))
+  (push '(emacspeak-speak-visual-line around)
         emacspeak-agent-shell--advice-list))
 
 (defun emacspeak-agent-shell-enable ()
