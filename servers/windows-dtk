@@ -37,7 +37,7 @@ proc windows_dtk_rpc {request} {
     windows_speech_rpc windows_dtk $request
 }
 
-proc native_speech_obsolete {} {
+proc native_character_obsolete {} {
     if {[chan pending input stdin] > 0} {
         return 1
     }
@@ -135,9 +135,6 @@ proc tts_set_character_scale {factor} {
 
 proc tts_say {text} {
     global tts
-	if {[native_speech_obsolete]} {
-	    return ""
-	}
 	synth "$text "
     return ""
 }
@@ -146,7 +143,7 @@ proc tts_say {text} {
 
 proc l {text} {
     global tts
-    if {[native_speech_obsolete]} {
+    if {[native_character_obsolete]} {
         return ""
     }
     if {[string length $text] == 1} {
@@ -210,10 +207,6 @@ proc r {rate} {
 
 proc speech_task {}  {
     global queue tts
-    if {[native_speech_obsolete]} {
-        queue_clear
-        return ""
-    }
     set mode  $tts(punctuations)
     set r $tts(speech_rate)
     set length [queue_length]
@@ -224,10 +217,6 @@ proc speech_task {}  {
     }
 
     loop index 0 $length {
-        if {[native_speech_obsolete]} {
-            queue_clear
-            return ""
-        }
         set event   [queue_remove]
         set event_type [lindex $event 0]
         switch  -exact -- $event_type {
@@ -249,9 +238,6 @@ proc speech_task {}  {
                 say "\[:tone $pitch,$duration\]"
             }
         }
-    }
-    if {[native_speech_obsolete]} {
-        return ""
     }
     synth " "
     return ""
